@@ -28,6 +28,8 @@ wire wb_rst = wb_rst_i;
 //
 ////////////////////////////////////////////////////////////////////////
 
+/*
+
 wire dbg_if_select;
 wire dbg_if_tdo;
 wire jtag_tap_tdo;
@@ -62,6 +64,8 @@ tap_top jtag_tap0 (
 	.mbist_tdi_i			(1'b0),
 	.debug_tdi_i			(dbg_if_tdo)
 );
+
+*/
 
 ////////////////////////////////////////////////////////////////////////
 //
@@ -226,7 +230,9 @@ wb_ram #(
 );
    assign wb_s2m_mem_rty = 1'b0;
 
-wire uart_irq;
+// wire uart_irq;
+
+/*
 
 uart_top #(
 	.debug	(0),
@@ -256,6 +262,8 @@ uart_top #(
    assign wb_s2m_uart_err = 1'b0;
    assign wb_s2m_uart_rty = 1'b0;
 
+*/
+   
 ////////////////////////////////////////////////////////////////////////
 //
 // CPU Interrupt assignments

@@ -15,6 +15,8 @@ module orpsoc_tb;
     wire tdi;
     wire tdo;
 
+	/*
+	
     reg enable_jtag_vpi;
     initial enable_jtag_vpi = $test$plusargs("enable_jtag_vpi");
 
@@ -27,12 +29,16 @@ module orpsoc_tb;
         .enable		(enable_jtag_vpi),
         .init_done	(orpsoc_tb.dut.wb_rst)
     );
+	
+	*/
 
    ////////////////////////////////////////////////////////////////////////
    //
    // ELF program loading
    //
    ////////////////////////////////////////////////////////////////////////
+   
+   /*
    integer mem_words;
    integer i;
    reg [31:0] mem_word;
@@ -56,6 +62,8 @@ module orpsoc_tb;
 	$display("No ELF file specified");
 
    end
+   
+   */
 
    ////////////////////////////////////////////////////////////////////////
    //
