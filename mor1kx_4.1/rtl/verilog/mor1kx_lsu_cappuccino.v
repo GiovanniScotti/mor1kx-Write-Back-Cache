@@ -206,6 +206,9 @@ module mor1kx_lsu_cappuccino
    wire 			     snoop_valid;
    wire 			     dc_snoop_hit;
 
+
+// ----------------------------------------- COMBINATIONAL LOGIC ------------------------------------------------------//
+
    // We have to mask out our snooped bus accesses
    assign snoop_valid = (OPTION_DCACHE_SNOOP != "NONE") ?
                         snoop_en_i & !((snoop_adr_i == dbus_adr_o) & dbus_ack_i) :
@@ -287,61 +290,61 @@ module mor1kx_lsu_cappuccino
 
    // Big endian bus mapping
    always @(*)
-     case (ctrl_lsu_length_i)
-       2'b00: // byte access
-	 case(ctrl_lsu_adr_i[1:0])
-	   2'b00:
-	     dbus_bsel = 4'b1000;
-	   2'b01:
-	     dbus_bsel = 4'b0100;
-	   2'b10:
-	     dbus_bsel = 4'b0010;
-	   2'b11:
-	     dbus_bsel = 4'b0001;
-	 endcase
-       2'b01: // halfword access
-	    case(ctrl_lsu_adr_i[1])
-	      1'b0:
-		dbus_bsel = 4'b1100;
-	      1'b1:
-		dbus_bsel = 4'b0011;
-	    endcase
-       2'b10,
-       2'b11:
-	 dbus_bsel = 4'b1111;
-     endcase
+    case (ctrl_lsu_length_i)
+      2'b00: // byte access
+      	case(ctrl_lsu_adr_i[1:0])
+      	  2'b00:
+      	    dbus_bsel = 4'b1000;
+      	  2'b01:
+      	    dbus_bsel = 4'b0100;
+      	  2'b10:
+      	    dbus_bsel = 4'b0010;
+      	  2'b11:
+      	   dbus_bsel = 4'b0001;
+      	endcase
+      2'b01: // halfword access
+    	  case(ctrl_lsu_adr_i[1])
+    	    1'b0:
+    	     dbus_bsel = 4'b1100;
+    	    1'b1:
+    		   dbus_bsel = 4'b0011;
+	      endcase
+      2'b10,
+      2'b11:
+	      dbus_bsel = 4'b1111;
+    endcase
 
    // Select part of read word
    always @*
-     case(ctrl_lsu_adr_i[1:0])
-       2'b00:
-	 dbus_dat_aligned = lsu_ldat;
-       2'b01:
-	 dbus_dat_aligned = {lsu_ldat[23:0],8'd0};
-       2'b10:
-	 dbus_dat_aligned = {lsu_ldat[15:0],16'd0};
-       2'b11:
-	 dbus_dat_aligned = {lsu_ldat[7:0],24'd0};
-     endcase // case (ctrl_lsu_adr_i[1:0])
+    case(ctrl_lsu_adr_i[1:0])
+      2'b00:
+	      dbus_dat_aligned = lsu_ldat;
+      2'b01:
+	      dbus_dat_aligned = {lsu_ldat[23:0],8'd0};
+      2'b10:
+	      dbus_dat_aligned = {lsu_ldat[15:0],16'd0};
+      2'b11:
+	      dbus_dat_aligned = {lsu_ldat[7:0],24'd0};
+    endcase // case (ctrl_lsu_adr_i[1:0])
 
    // Do appropriate extension
-   always @(*)
-     case({ctrl_lsu_zext_i, ctrl_lsu_length_i})
-       3'b100: // lbz
-	 dbus_dat_extended = {24'd0,dbus_dat_aligned[31:24]};
-       3'b101: // lhz
-	 dbus_dat_extended = {16'd0,dbus_dat_aligned[31:16]};
-       3'b000: // lbs
-	 dbus_dat_extended = {{24{dbus_dat_aligned[31]}},
+  always @(*)
+    case({ctrl_lsu_zext_i, ctrl_lsu_length_i})
+      3'b100: // lbz
+	      dbus_dat_extended = {24'd0,dbus_dat_aligned[31:24]};
+      3'b101: // lhz
+	      dbus_dat_extended = {16'd0,dbus_dat_aligned[31:16]};
+      3'b000: // lbs
+	      dbus_dat_extended = {{24{dbus_dat_aligned[31]}},
 			      dbus_dat_aligned[31:24]};
-       3'b001: // lhs
-	 dbus_dat_extended = {{16{dbus_dat_aligned[31]}},
+      3'b001: // lhs
+	      dbus_dat_extended = {{16{dbus_dat_aligned[31]}},
 			      dbus_dat_aligned[31:16]};
-       default:
-	 dbus_dat_extended = dbus_dat_aligned;
-     endcase
+      default:
+	      dbus_dat_extended = dbus_dat_aligned;
+    endcase
 
-   assign lsu_result_o = dbus_dat_extended;
+  assign lsu_result_o = dbus_dat_extended;
 
    // Bus access logic
    localparam [2:0]
@@ -355,20 +358,20 @@ module mor1kx_lsu_cappuccino
 
    assign dbus_access = (!dc_access | tlb_reload_busy | ctrl_op_lsu_store_i) &
 			(state != DC_REFILL) | (state == WRITE);
-   reg      dc_refill_r;
+
+   reg dc_refill_r;
 
    always @(posedge clk)
      dc_refill_r <= dc_refill;
 
-   wire     store_buffer_ack;
+   wire store_buffer_ack;
    assign store_buffer_ack = (FEATURE_STORE_BUFFER!="NONE") ?
 			     store_buffer_write :
 			     write_done;
 
    assign lsu_ack = (ctrl_op_lsu_store_i | state == WRITE) ?
-		    (store_buffer_ack & !ctrl_op_lsu_atomic_i |
-		     write_done & ctrl_op_lsu_atomic_i) :
-		    (dbus_access ? dbus_ack : dc_ack);
+		                (store_buffer_ack & !ctrl_op_lsu_atomic_i |write_done & ctrl_op_lsu_atomic_i) :
+		                (dbus_access ? dbus_ack : dc_ack);
 
    assign lsu_ldat = dbus_access ? dbus_dat : dc_ldat;
    assign dbus_adr_o = dbus_adr;
@@ -385,210 +388,224 @@ module mor1kx_lsu_cappuccino
    assign dbus_we_o = dbus_we & (!dbus_atomic | atomic_reserve);
 
    assign next_dbus_adr = (OPTION_DCACHE_BLOCK_WIDTH == 5) ?
-			  {dbus_adr[31:5], dbus_adr[4:0] + 5'd4} : // 32 byte
-			  {dbus_adr[31:4], dbus_adr[3:0] + 4'd4};  // 16 byte
+			                    {dbus_adr[31:5], dbus_adr[4:0] + 5'd4} : // 32 byte
+			                    {dbus_adr[31:4], dbus_adr[3:0] + 4'd4};  // 16 byte
 
-   always @(posedge clk `OR_ASYNC_RST)
-     if (rst)
-       dbus_err <= 0;
-     else
-       dbus_err <= dbus_err_i;
+  always @(posedge clk `OR_ASYNC_RST)
+    if (rst)
+      dbus_err <= 0;
+    else
+      dbus_err <= dbus_err_i;
 
-   always @(posedge clk) begin
-      dbus_ack <= 0;
-      write_done <= 0;
-      tlb_reload_ack <= 0;
-      tlb_reload_done <= 0;
-      case (state)
-	IDLE: begin
-	   dbus_req_o <= 0;
-	   dbus_we <= 0;
-	   dbus_adr <= 0;
-	   dbus_bsel_o <= 4'hf;
-	   dbus_atomic <= 0;
-	   last_write <= 0;
-	   if (store_buffer_write | !store_buffer_empty) begin
-	      state <= WRITE;
-	   end else if (ctrl_op_lsu & dbus_access & !dc_refill & !dbus_ack &
-			!dbus_err & !except_dbus & !access_done &
-			!pipeline_flush_i) begin
-	      if (tlb_reload_req) begin
-		 dbus_adr <= tlb_reload_addr;
-		 dbus_req_o <= 1;
-		 state <= TLB_RELOAD;
-	      end else if (dmmu_enable_i) begin
-		 dbus_adr <= dmmu_phys_addr;
-		 if (!tlb_miss & !pagefault & !except_align) begin
-		    if (ctrl_op_lsu_load_i) begin
-		       dbus_req_o <= 1;
-		       dbus_bsel_o <= dbus_bsel;
-		       state <= READ;
-		    end
-		 end
-	      end else if (!except_align) begin
-		 dbus_adr <= ctrl_lsu_adr_i;
-		 if (ctrl_op_lsu_load_i) begin
-		    dbus_req_o <= 1;
-		    dbus_bsel_o <= dbus_bsel;
-		    state <= READ;
-		 end
-	      end
-	   end else if (dc_refill_req) begin
-	      dbus_req_o <= 1;
-	      dbus_adr <= dc_adr_match;
-	      state <= DC_REFILL;
-	   end
-	end
 
-	DC_REFILL: begin
-	   dbus_req_o <= 1;
-	   if (dbus_ack_i) begin
-	      dbus_adr <= next_dbus_adr;
-	      if (dc_refill_done) begin
-		 dbus_req_o <= 0;
-		 state <= IDLE;
-	      end
-	   end
+// --------------------------------------------  FSM - SEQUENTIAL LOGIC -----------------------------------------------//
 
-	   // TODO: only abort on snoop-hits to refill address
-	   if (dbus_err_i | dc_snoop_hit) begin
-	      dbus_req_o <= 0;
-	      state <= IDLE;
-	   end
-	end
+  always @(posedge clk) begin
+    dbus_ack <= 0;
+    write_done <= 0;
+    tlb_reload_ack <= 0;
+    tlb_reload_done <= 0;
 
-	READ: begin
-	   dbus_ack <= dbus_ack_i;
-	   dbus_dat <= dbus_dat_i;
-	   if (dbus_ack_i | dbus_err_i) begin
-	      dbus_req_o <= 0;
-	      state <= IDLE;
-	   end
-	end
-
-	WRITE: begin
-	   dbus_req_o <= 1;
-	   dbus_we <= 1;
-
-	   if (!dbus_req_o | dbus_ack_i & !last_write) begin
-	      dbus_bsel_o <= store_buffer_bsel;
-	      dbus_adr <= store_buffer_radr;
-	      dbus_dat <= store_buffer_dat;
-	      dbus_atomic <= store_buffer_atomic;
-	      last_write <= store_buffer_empty;
-	   end
-
-	   if (store_buffer_write)
-	     last_write <= 0;
-
-	   if (last_write & dbus_ack_i | dbus_err_i) begin
+    case (state)
+	    IDLE: begin
 	      dbus_req_o <= 0;
 	      dbus_we <= 0;
-	      if (!store_buffer_write) begin
-		 state <= IDLE;
-		 write_done <= 1;
+	      dbus_adr <= 0;
+	      dbus_bsel_o <= 4'hf;
+	      dbus_atomic <= 0;
+	      last_write <= 0;
+	      if (store_buffer_write | !store_buffer_empty) begin
+	        state <= WRITE;
 	      end
-	   end
-	end
+        else if (ctrl_op_lsu & dbus_access & !dc_refill & !dbus_ack &
+			           !dbus_err & !except_dbus & !access_done &
+			           !pipeline_flush_i) begin
+	        if (tlb_reload_req) begin
+		        dbus_adr <= tlb_reload_addr;
+		        dbus_req_o <= 1;
+		        state <= TLB_RELOAD;
+	        end 
+          else if (dmmu_enable_i) begin
+		        dbus_adr <= dmmu_phys_addr;
+		        if (!tlb_miss & !pagefault & !except_align) begin
+		          if (ctrl_op_lsu_load_i) begin
+		            dbus_req_o <= 1;
+		            dbus_bsel_o <= dbus_bsel;
+		            state <= READ;
+		          end
+		        end
+	        end 
+          else if (!except_align) begin
+		        dbus_adr <= ctrl_lsu_adr_i;
+		        if (ctrl_op_lsu_load_i) begin
+		          dbus_req_o <= 1;
+		          dbus_bsel_o <= dbus_bsel;
+		          state <= READ;
+		        end
+	        end
+	      end 
+        else if (dc_refill_req) begin
+	        dbus_req_o <= 1;
+	        dbus_adr <= dc_adr_match;
+	        state <= DC_REFILL;
+	      end
+	    end
 
-	TLB_RELOAD: begin
-	   dbus_adr <= tlb_reload_addr;
-	   tlb_reload_data <= dbus_dat_i;
-	   tlb_reload_ack <= dbus_ack_i & tlb_reload_req;
+	    DC_REFILL: begin
+	      dbus_req_o <= 1;
+	      if (dbus_ack_i) begin
+	        dbus_adr <= next_dbus_adr;
+	          if (dc_refill_done) begin
+		          dbus_req_o <= 0;
+		          state <= IDLE;
+	          end
+	      end
 
-	   if (!tlb_reload_req | dbus_err_i) begin
+	      // TODO: only abort on snoop-hits to refill address
+	      if (dbus_err_i | dc_snoop_hit) begin
+	        dbus_req_o <= 0;
+	        state <= IDLE;
+	      end
+	    end
+
+	    READ: begin
+	      dbus_ack <= dbus_ack_i;
+	      dbus_dat <= dbus_dat_i;
+	      if (dbus_ack_i | dbus_err_i) begin
+	        dbus_req_o <= 0;
+	        state <= IDLE;
+	      end
+	    end
+
+	    WRITE: begin
+	      dbus_req_o <= 1;
+	      dbus_we <= 1;
+
+	      if (!dbus_req_o | dbus_ack_i & !last_write) begin
+	        dbus_bsel_o <= store_buffer_bsel;
+	        dbus_adr <= store_buffer_radr;
+	        dbus_dat <= store_buffer_dat;
+	        dbus_atomic <= store_buffer_atomic;
+	        last_write <= store_buffer_empty;
+	      end
+
+	      if (store_buffer_write)
+	        last_write <= 0;
+
+	      if (last_write & dbus_ack_i | dbus_err_i) begin
+	        dbus_req_o <= 0;
+	        dbus_we <= 0;
+	        if (!store_buffer_write) begin
+		        state <= IDLE;
+		        write_done <= 1;
+	        end
+	      end
+	    end
+
+	    TLB_RELOAD: begin
+	      dbus_adr <= tlb_reload_addr;
+	      tlb_reload_data <= dbus_dat_i;
+	      tlb_reload_ack <= dbus_ack_i & tlb_reload_req;
+
+	      if (!tlb_reload_req | dbus_err_i) begin
+	        state <= IDLE;
+	        tlb_reload_done <= 1;
+	      end
+
+	      dbus_req_o <= tlb_reload_req;
+
+	      if (dbus_ack_i | tlb_reload_ack)
+	        dbus_req_o <= 0;
+
+	    end
+
+	    default:
 	      state <= IDLE;
-	      tlb_reload_done <= 1;
-	   end
+    
+    endcase
 
-	   dbus_req_o <= tlb_reload_req;
-	   if (dbus_ack_i | tlb_reload_ack)
-	     dbus_req_o <= 0;
-	end
+    if (rst)
+	    state <= IDLE;
 
-	default:
-	  state <= IDLE;
-      endcase
+  end // end always sequential block
 
-      if (rst)
-	state <= IDLE;
-   end
+  assign dbus_stall = tlb_reload_busy | except_align | except_dbus |
+		                  except_dtlb_miss | except_dpagefault |
+		                  pipeline_flush_i;
 
-   assign dbus_stall = tlb_reload_busy | except_align | except_dbus |
-		       except_dtlb_miss | except_dpagefault |
-		       pipeline_flush_i;
+  // Stall until the store buffer is empty
+  assign msync_stall_o = ctrl_op_msync_i & (state == WRITE);
 
-   // Stall until the store buffer is empty
-   assign msync_stall_o = ctrl_op_msync_i & (state == WRITE);
+// ---------------------------------------------ATOMIC OPERATIONS LOGIC ------------------------------------------------//
 
 generate
-if (FEATURE_ATOMIC!="NONE") begin : atomic_gen
+  if (FEATURE_ATOMIC!="NONE") begin : atomic_gen
    // Atomic operations logic
-   reg atomic_flag_set;
-   reg atomic_flag_clear;
+    reg atomic_flag_set;
+    reg atomic_flag_clear;
 
-   always @(posedge clk `OR_ASYNC_RST)
-     if (rst)
-       atomic_reserve <= 0;
-     else if (pipeline_flush_i)
-       atomic_reserve <= 0;
-     else if (ctrl_op_lsu_store_i & ctrl_op_lsu_atomic_i & write_done ||
-	      !ctrl_op_lsu_atomic_i & store_buffer_write &
-	      (store_buffer_wadr == atomic_addr) ||
-	      (snoop_valid & (snoop_adr_i == atomic_addr)))
-       atomic_reserve <= 0;
-     else if (ctrl_op_lsu_load_i & ctrl_op_lsu_atomic_i & padv_ctrl_i)
-       atomic_reserve <= !(snoop_valid & (snoop_adr_i == dc_adr_match));
+    always @(posedge clk `OR_ASYNC_RST)
+      if (rst)
+        atomic_reserve <= 0;
+      else if (pipeline_flush_i)
+        atomic_reserve <= 0;
+      else if (ctrl_op_lsu_store_i & ctrl_op_lsu_atomic_i & write_done ||
+	             !ctrl_op_lsu_atomic_i & store_buffer_write &
+	             (store_buffer_wadr == atomic_addr) ||
+	             (snoop_valid & (snoop_adr_i == atomic_addr)))
+        atomic_reserve <= 0;
+      else if (ctrl_op_lsu_load_i & ctrl_op_lsu_atomic_i & padv_ctrl_i)
+        atomic_reserve <= !(snoop_valid & (snoop_adr_i == dc_adr_match));
 
-   always @(posedge clk)
-     if (ctrl_op_lsu_load_i & ctrl_op_lsu_atomic_i & padv_ctrl_i)
-       atomic_addr <= dc_adr_match;
+    always @(posedge clk)
+      if (ctrl_op_lsu_load_i & ctrl_op_lsu_atomic_i & padv_ctrl_i)
+        atomic_addr <= dc_adr_match;
 
-   assign swa_success = ctrl_op_lsu_store_i & ctrl_op_lsu_atomic_i &
-			atomic_reserve & (dbus_adr == atomic_addr);
+    assign swa_success = ctrl_op_lsu_store_i & ctrl_op_lsu_atomic_i &
+		   	atomic_reserve & (dbus_adr == atomic_addr);
 
-   always @(posedge clk)
-     if (padv_ctrl_i)
-       atomic_flag_set <= 0;
-     else if (write_done)
-       atomic_flag_set <= swa_success & lsu_valid_o;
+    always @(posedge clk)
+      if (padv_ctrl_i)
+        atomic_flag_set <= 0;
+      else if (write_done)
+        atomic_flag_set <= swa_success & lsu_valid_o;
 
-   always @(posedge clk)
-     if (padv_ctrl_i)
-       atomic_flag_clear <= 0;
-     else if (write_done)
-       atomic_flag_clear <= !swa_success & lsu_valid_o &
-			    ctrl_op_lsu_atomic_i & ctrl_op_lsu_store_i;
+    always @(posedge clk)
+      if (padv_ctrl_i)
+        atomic_flag_clear <= 0;
+      else if (write_done)
+        atomic_flag_clear <= !swa_success & lsu_valid_o & ctrl_op_lsu_atomic_i & ctrl_op_lsu_store_i;
 
-   assign atomic_flag_set_o = atomic_flag_set;
-   assign atomic_flag_clear_o = atomic_flag_clear;
+    assign atomic_flag_set_o = atomic_flag_set;
+    assign atomic_flag_clear_o = atomic_flag_clear;
 
-end else begin
-   assign atomic_flag_set_o = 0;
-   assign atomic_flag_clear_o = 0;
-   assign swa_success = 0;
-   always @(posedge clk) begin
+  end // end of " if (FEATURE_ATOMIC!="NONE") begin : atomic_gen"
+  else begin
+    assign atomic_flag_set_o = 0;
+    assign atomic_flag_clear_o = 0;
+    assign swa_success = 0;
+    always @(posedge clk) begin
       atomic_addr <= 0;
       atomic_reserve <= 0;
-   end
-end
+    end //end always
+  end //end else
+
 endgenerate
 
-   // Store buffer logic
-   always @(posedge clk)
-     if (rst)
-       store_buffer_write_pending <= 0;
-     else if (store_buffer_write | pipeline_flush_i)
-       store_buffer_write_pending <= 0;
-     else if (ctrl_op_lsu_store_i & padv_ctrl_i & !dbus_stall &
-	      (store_buffer_full | dc_refill | dc_refill_r | dc_snoop_hit))
-       store_buffer_write_pending <= 1;
+// --------------------------------------------- STORE BUFFER LOGIC ----------------------------------------------------//
 
-   assign store_buffer_write = (ctrl_op_lsu_store_i &
-				(padv_ctrl_i | tlb_reload_done) |
-				store_buffer_write_pending) &
-			       !store_buffer_full & !dc_refill & !dc_refill_r &
-			       !dbus_stall & !dc_snoop_hit;
+// Store buffer logic
+always @(posedge clk)
+  if (rst)
+    store_buffer_write_pending <= 0;
+  else if (store_buffer_write | pipeline_flush_i)
+    store_buffer_write_pending <= 0;
+  else if (ctrl_op_lsu_store_i & padv_ctrl_i & !dbus_stall & 
+          (store_buffer_full | dc_refill | dc_refill_r | dc_snoop_hit) )
+    store_buffer_write_pending <= 1;
+
+assign store_buffer_write = (ctrl_op_lsu_store_i & (padv_ctrl_i | tlb_reload_done) | store_buffer_write_pending) &
+			                         !store_buffer_full & !dc_refill & !dc_refill_r & !dbus_stall & !dc_snoop_hit;
 
 generate
 if (FEATURE_STORE_BUFFER!="NONE") begin : store_buffer_gen
