@@ -666,6 +666,7 @@ generate
 if (FEATURE_STORE_BUFFER!="NONE") begin : store_buffer_gen
 // Attenzione: lo store buffer comunica con il bus solo nello stato WRITE.
 // Voglio che store_buffer_read si attivi solo nello stato WRITE
+// Lo store buffer deve essere instanziato sempre!!!
    assign store_buffer_read = (state == IDLE) & store_buffer_write |
 			      (state == IDLE) & !store_buffer_empty |
 			      (state == WRITE) & (dbus_ack_i | !dbus_req_o) &
