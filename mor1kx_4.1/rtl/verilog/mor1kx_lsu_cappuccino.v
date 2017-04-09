@@ -443,7 +443,16 @@ module mor1kx_lsu_cappuccino
 		          state <= READ;
 		        end
 	        end
-	      end 
+	      end
+		
+		/*
+		else if (dc_dump_req) begin
+		   ...
+		   state <= DC_DUMP_VICTIM
+		
+		end
+		*/
+		
         else if (dc_refill_req) begin
 	        dbus_req_o <= 1;
 	        dbus_adr <= dc_adr_match;
