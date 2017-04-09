@@ -4,11 +4,15 @@
  of the OHDL was not distributed with this file, You
  can obtain one at http://juliusbaxter.net/ohdl/ohdl.txt
 
- Description: Data cache implementation
+ Description: Data cache implementation with write-back policy
 
  Copyright (C) 2012-2013
+ Original implementation by:
     Stefan Kristiansson <stefan.kristiansson@saunalahti.fi>
     Stefan Wallentowitz <stefan.wallentowitz@tum.de>
+ Modified by:
+    Francesco Maio
+	Giovanni Scotti
 
  ******************************************************************************/
 
@@ -31,6 +35,7 @@ module mor1kx_dcache
     input 			      dc_enable_i,
     input 			      dc_access_i,
 	
+	// Asserted when in the refill state
     output 			      refill_o,
 	// Asserted when a miss occurred and refill is required
     output 			      refill_req_o,
@@ -308,14 +313,7 @@ module mor1kx_dcache
 		 assign check_way_dirty[i] = tag_way_out[i][TAGMEM_WAY_DIRTY];
 		 
 		 // Did a hit occur?
-         assign way_hit[i] = check_way_valid[i] & check_way_match[i];
-		 
-		 
-		 
-		 // DA USARE QUANDO BISOGNA CONTROLLARE SE IL WAY CHA FA UNA HIT E' SPORCO (RAMO WRITE)
-		 assign way_hit_dirty[i] = way_hit[i] & check_way_dirty[i]; 
-		 
-		 
+         assign way_hit[i] = check_way_valid[i] & check_way_match[i];	 
 		 
 		 // Asserted whenever a way is valid, but also dirty
 		 // This is used in the dump_victim state in order to understand if the way must be flushed.
@@ -783,14 +781,6 @@ module mor1kx_dcache
       end
 
       if (OPTION_DCACHE_WAYS >= 2) begin : gen_u_lru
-         /* mor1kx_cache_lru AUTO_TEMPLATE(
-          .current  (current_lru_history),
-          .update   (next_lru_history),
-          .lru_pre  (lru),
-          .lru_post (),
-          .access   (access),
-          ); */
-
          mor1kx_cache_lru
            #(.NUMWAYS(OPTION_DCACHE_WAYS))
          u_lru(/*AUTOINST*/
