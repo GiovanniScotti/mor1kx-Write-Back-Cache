@@ -170,12 +170,19 @@ module mor1kx_dcache
    wire 			      refill_done;
    wire 			      refill_hit;
    
+   wire                   dump_done;
+   wire                   dump_clearance;
+   reg [WAY_WIDTH-3:0]    dump_adr;
+   
    /*
    * These are 8 bit variables, one bit per each possible 32-bit block in the cache block.
    * By default the cache block is made of 32 Bytes, therefore 8 32 bit block are contained into it.
    */
    reg [(1<<(OPTION_DCACHE_BLOCK_WIDTH-2))-1:0] refill_valid;
    reg [(1<<(OPTION_DCACHE_BLOCK_WIDTH-2))-1:0] refill_valid_r;
+   
+   reg [(1<<(OPTION_DCACHE_BLOCK_WIDTH-2))-1:0] dump_valid;
+   
    wire				      invalidate;
 
    // The index we read and write from tag memory
@@ -302,7 +309,8 @@ module mor1kx_dcache
 	  for (i = 0; i < OPTION_DCACHE_WAYS; i=i+1) begin : ways
 	  
 		 // Address used to access a way. It is taken from the incoming address
-	     assign way_raddr[i] = cpu_adr_i[WAY_WIDTH-1:2];
+		 // If in the DUMP_VICTIM state, the read address is dump_adr
+	     assign way_raddr[i] = (state = DUMP_VICTIM) ? dump_adr : cpu_adr_i[WAY_WIDTH-1:2];
 		 // We can write into the way memory only in the write state and in the refill state
 	     assign way_waddr[i] = write ? cpu_adr_match_i[WAY_WIDTH-1:2] : wradr_i[WAY_WIDTH-1:2];
 	     // Data to copy into the way memory
@@ -323,7 +331,8 @@ module mor1kx_dcache
 		 
 		 // Asserted whenever a way is valid, but also dirty
 		 // This is used in the dump_victim state in order to understand if the way must be flushed.
-		 // If the way is dirty, but it is not valid, it must not be dumped
+		 // If the way is dirty, but it is not valid, it must not be dumped.
+		 // The way to be dumped is given by lru
 		 assign way_dirty[i] = check_way_valid[i] & check_way_dirty[i];
 		 
          // Multiplex the way entries in the tag memory and concatenate the tags and flags
@@ -422,11 +431,17 @@ module mor1kx_dcache
    
    // Refill is required if in the read state a miss occurs.
    assign refill_req_o = read & cpu_req_i & !hit & !write_pending & refill_allowed | refill;
-   // DA RIGUARDARE
+  
+  
+   // TODO: check the condition
+  
+   // dump_req_o signal is in charge of controlling the transition of the LSU to the DC_DUMP_VICTIM state
    assign dump_req_o = read & cpu_req_i & !hit & !write_pending & refill_allowed | dump_victim;
-
    
-   
+   // Tell the lsu whether the dump is done or not
+   assign dump_done_o = dump_done;
+   // If the dump procedure can take place
+   assign dump_clearance = |(lru & way_dirty);
    
    
    /*
@@ -513,6 +528,8 @@ module mor1kx_dcache
 		 READ: begin
 	        if (dc_access_i | cpu_we_i & dc_enable_i) begin
 		       if (!hit & cpu_req_i & !write_pending & refill_allowed) begin
+			      dump_valid <= 0;
+				  
 		          refill_valid <= 0;
 		          refill_valid_r <= 0;
 
@@ -524,7 +541,10 @@ module mor1kx_dcache
 		          for (w1 = 0; w1 < OPTION_DCACHE_WAYS; w1 = w1 + 1) begin
 		             tag_way_save[w1] <= tag_way_out[w1];
 		          end
-
+				  
+				  // Take the address of the set and concatenate it with 0
+				  // This is the address to increment by 4 to carry out the dump.
+				  dump_adr <= {cpu_adr_match_i[WAY_WIDTH-1:OPTION_DCACHE_BLOCK_WIDTH],{(OPTION_DCACHE_BLOCK_WIDTH-2){1'b0}};
 		          state <= DUMP_VICTIM;
 		       end else if (cpu_we_i | write_pending) begin
 		          state <= WRITE;
@@ -537,9 +557,19 @@ module mor1kx_dcache
 	     end
 		 
 		 DUMP_VICTIM: begin
-		 
-		    if (dump_done)
-			   state <= REFILL;
+		    // Check if dirty bit == 1 (it remains asserted for all the duration of the dump)
+			// The dirty bit will be reset at the end of the refill state
+			if (dump_clearance) begin
+			   dump_valid[dump_adr[OPTION_DCACHE_BLOCK_WIDTH-1:2]] <= 1;
+			   
+			   //Increment by 4
+			
+			   if (dump_done) begin
+			      state <= REFILL;
+			   end
+			end else begin
+		       state <= REFILL;
+			end
 		 end
 		 
 		 /*
