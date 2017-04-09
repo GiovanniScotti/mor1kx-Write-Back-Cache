@@ -42,12 +42,18 @@ module mor1kx_dcache
 	// Asserted when refill is completed
     output 			      refill_done_o,
 	
+	// ---------- DUMP VICTIM SIGNALS ----------
+	
 	// Data to be dumped in the LSU store buffer
 	output                dump_dat_o;
 	// Address of the data to be dumped
 	output                dump_adr_o;
 	// Control signal that tells the LSU to enter in the dump_victim state
 	output                dump_req_o;
+	// Asserted when in the dump victim state
+	output                dump_victim_o;
+	// Asserted when dump is completed
+	output                dump_done_o;
 
     // CPU Interface
     output 			      cpu_err_o,
@@ -402,6 +408,7 @@ module mor1kx_dcache
    assign dump_victim = (state == DUMP_VICTIM);
 
    assign refill_o = refill;
+   assign dump_victim_o = dump_victim;
 
    
    // *************************************************
@@ -415,8 +422,8 @@ module mor1kx_dcache
    
    // Refill is required if in the read state a miss occurs.
    assign refill_req_o = read & cpu_req_i & !hit & !write_pending & refill_allowed | refill;
-   
-   //assign dump_req_o = dump_victim & dirty;
+   // DA RIGUARDARE
+   assign dump_req_o = read & cpu_req_i & !hit & !write_pending & refill_allowed | dump_victim;
 
    
    
@@ -510,7 +517,7 @@ module mor1kx_dcache
 		          refill_valid_r <= 0;
 
 		          // Store the LRU information for correct replacement
-                  // on refill. Always one when only one way.
+                  // on refill. Always one when only one way in the cache.
                   tag_save_lru <= (OPTION_DCACHE_WAYS==1) | lru;
 
 				  // Save all the ways in order to restore them at the end of the replacement
@@ -617,7 +624,7 @@ module mor1kx_dcache
 
 	  // Write access to the tag memory
       tag_we = 1'b0;
-	  // Write access to the way memory
+	  // Write access to the way memory. The default is 0: nothing can be accessed
       way_we = {(OPTION_DCACHE_WAYS){1'b0}};
       // Access to the LRU module
       access = {(OPTION_DCACHE_WAYS){1'b0}};
@@ -678,7 +685,11 @@ module mor1kx_dcache
 	     WRITE: begin
 	        way_wr_dat = cpu_dat_i;
 	        if (hit & cpu_req_i) begin
-		    /* Mux cache output with write data */
+		    /* 
+			* Mux cache output with write data.
+			* It allows to write the received byte only leaving
+			* the other data untouched.
+			*/
 		       if (!cpu_bsel_i[3])
 		          way_wr_dat[31:24] = cpu_dat_o[31:24];
 		       if (!cpu_bsel_i[2])
@@ -688,7 +699,7 @@ module mor1kx_dcache
 		       if (!cpu_bsel_i[0])
 		          way_wr_dat[7:0] = cpu_dat_o[7:0];
 
-		 
+				
 	           way_we = way_hit;
 
 	           tag_lru_in = next_lru_history;
@@ -783,7 +794,7 @@ module mor1kx_dcache
       if (OPTION_DCACHE_WAYS >= 2) begin : gen_u_lru
          mor1kx_cache_lru
            #(.NUMWAYS(OPTION_DCACHE_WAYS))
-         u_lru(/*AUTOINST*/
+         u_lru(
 	       // Outputs
 	       .update			(next_lru_history),	     // Templated
 	       .lru_pre			(lru),			         // Templated
