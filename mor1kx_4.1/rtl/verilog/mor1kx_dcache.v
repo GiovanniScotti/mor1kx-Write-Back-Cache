@@ -36,6 +36,13 @@ module mor1kx_dcache
     output 			      refill_req_o,
 	// Asserted when refill is completed
     output 			      refill_done_o,
+	
+	// Data to be dumped in the LSU store buffer
+	output                dump_dat_o;
+	// Address of the data to be dumped
+	output                dump_adr_o;
+	// Control signal that tells the LSU to enter in the dump_victim state
+	output                dump_req_o;
 
     // CPU Interface
     output 			      cpu_err_o,
@@ -80,12 +87,18 @@ module mor1kx_dcache
     output 			      spr_bus_ack_o
     );
 
+   /*
+   * A new state called "DUMP_VICTIM" is in charge of flushing a dirty block before
+   * it is replaces in the REFILL state.
+   */
+	
    // States
-   localparam IDLE		    = 5'b00001;
-   localparam READ	     	= 5'b00010;
-   localparam WRITE		    = 5'b00100;
-   localparam REFILL		= 5'b01000;
-   localparam INVALIDATE	= 5'b10000;
+   localparam IDLE		    = 6'b000001;
+   localparam READ	     	= 6'b000010;
+   localparam WRITE		    = 6'b000100;
+   localparam REFILL		= 6'b001000;
+   localparam INVALIDATE	= 6'b010000;
+   localparam DUMP_VICTIM   = 6'b100000;
 
    /* 
    * Address space in bytes for a way.
@@ -93,20 +106,26 @@ module mor1kx_dcache
    */
    localparam WAY_WIDTH = OPTION_DCACHE_BLOCK_WIDTH + OPTION_DCACHE_SET_WIDTH;
    /*
-    * Tag memory layout
-    *            +---------------------------------------------------------+
-    * (index) -> | LRU | wayN valid | wayN tag |...| way0 valid | way0 tag |
-    *            +---------------------------------------------------------+
+    * TAG MEMORY layout with the dirty bit implementation.
+	* The index allows to identify a memory structure like the one provided below.
+	*
+    * +-----------------------------------------------------------------------------------+
+    * | LRU | wayN dirty | wayN valid | wayN tag |...| way0 dirty | way0 valid | way0 tag |
+    * +-----------------------------------------------------------------------------------+
     */
 
    // Tag width in bits
    localparam TAG_WIDTH = (OPTION_DCACHE_LIMIT_WIDTH - WAY_WIDTH);
 
    // The tag memory contains entries with OPTION_DCACHE_WAYS parts of
-   // each TAGMEM_WAY_WIDTH. Each of those is tag and a valid flag.
-   localparam TAGMEM_WAY_WIDTH = TAG_WIDTH + 1;
+   // TAGMEM_WAY_WIDTH bits each. They are composed (from right to left)
+   // by the tag, the valid bit and the dirty bit.
+   // "+2" is for the valid and the dirty bits.
+   localparam TAGMEM_WAY_WIDTH = TAG_WIDTH + 2;
+   // Position of the dirty bit
+   localparam TAGMEM_WAY_DIRTY = TAGMEM_WAY_WIDTH - 1;
    // Position of the valid bit
-   localparam TAGMEM_WAY_VALID = TAGMEM_WAY_WIDTH - 1;
+   localparam TAGMEM_WAY_VALID = TAGMEM_WAY_WIDTH - 2;
 
    // Additionally, the tag memory entry contains an LRU value. The
    // width of this is 0 for OPTION_DCACHE_LIMIT_WIDTH==1
@@ -125,12 +144,14 @@ module mor1kx_dcache
    localparam TAG_LRU_LSB = TAG_LRU_MSB - TAG_LRU_WIDTH + 1;
 
    // FSM state signals
-   reg [4:0] 			  state;
+   reg [5:0] 			  state;
    wire				      read;
    wire				      write;
    wire				      refill;
+   wire                   dump_victim;
 
    reg [WAY_WIDTH-1:OPTION_DCACHE_BLOCK_WIDTH] invalidate_adr;
+   
    // The next address to be used in the refill state
    wire [31:0] 			  next_refill_adr;
    reg [31:0] 			  way_wr_dat;
@@ -209,6 +230,7 @@ module mor1kx_dcache
    wire [TAG_WIDTH-1:0]               check_way_tag [OPTION_DCACHE_WAYS-1:0];
    wire                               check_way_match [OPTION_DCACHE_WAYS-1:0];
    wire                               check_way_valid [OPTION_DCACHE_WAYS-1:0];
+   wire                               check_way_dirty [OPTION_DCACHE_WAYS-1:0];
 
    reg 				      write_pending;
 
@@ -282,25 +304,28 @@ module mor1kx_dcache
          assign check_way_match[i] = (check_way_tag[i] == tag_tag);
 		 // It stores the value of the valid bit of each way
          assign check_way_valid[i] = tag_way_out[i][TAGMEM_WAY_VALID];
-		 
-		 
-		 
-		 // ******************************
-		 // CHECK WAY DIRTY?
-		 //
-		 // wire check_way_dirty[OPTION_DCACHE_WAYS-1:0];
-		 // assign check_way_dirty[i] = tag_way_out[i][TAGMEM_WAY_DIRTY];
-		 // ------------------------------
-
-		 
+		 // It stores the value of the dirty bit in each way
+		 assign check_way_dirty[i] = tag_way_out[i][TAGMEM_WAY_DIRTY];
 		 
 		 // Did a hit occur?
          assign way_hit[i] = check_way_valid[i] & check_way_match[i];
-
+		 
+		 
+		 
+		 // DA USARE QUANDO BISOGNA CONTROLLARE SE IL WAY CHA FA UNA HIT E' SPORCO (RAMO WRITE)
+		 assign way_hit_dirty[i] = way_hit[i] & check_way_dirty[i]; 
+		 
+		 
+		 
+		 // Asserted whenever a way is valid, but also dirty
+		 // This is used in the dump_victim state in order to understand if the way must be flushed.
+		 // If the way is dirty, but it is not valid, it must not be dumped
+		 assign way_dirty[i] = check_way_valid[i] & check_way_dirty[i];
+		 
          // Multiplex the way entries in the tag memory and concatenate the tags and flags
 		 // of the different ways
          assign tag_din[(i+1)*TAGMEM_WAY_WIDTH-1:i*TAGMEM_WAY_WIDTH] = tag_way_in[i];
-		 // tag_way_out contains the valid bit (+dirty) and the tag
+		 // tag_way_out contains the valid bit, the dirty bit and the tag
          assign tag_way_out[i] = tag_dout[(i+1)*TAGMEM_WAY_WIDTH-1:i*TAGMEM_WAY_WIDTH];
 
 	     if (OPTION_DCACHE_SNOOP != "NONE") begin
@@ -316,7 +341,7 @@ module mor1kx_dcache
       end
    endgenerate
 
-   // Hit is true if there is at least one hit in one way
+   // hit is true if there is at least one hit in one way
    assign hit = |way_hit;
 
    assign snoop_hit = (OPTION_DCACHE_SNOOP != "NONE") &
@@ -376,6 +401,7 @@ module mor1kx_dcache
    assign refill = (state == REFILL);
    assign read = (state == READ);
    assign write = (state == WRITE);
+   assign dump_victim = (state == DUMP_VICTIM);
 
    assign refill_o = refill;
 
@@ -385,11 +411,19 @@ module mor1kx_dcache
    // the write allocate feature
    // -------------------------------------------------
    
+   
+   
    // ATTENZIONE QUI: READ DIVENTA DUMP REQUEST
    
    // Refill is required if in the read state a miss occurs.
    assign refill_req_o = read & cpu_req_i & !hit & !write_pending & refill_allowed | refill;
+   
+   //assign dump_req_o = dump_victim & dirty;
 
+   
+   
+   
+   
    /*
     * SPR bus interface
     */
@@ -471,6 +505,39 @@ module mor1kx_dcache
 		       state <= READ;
 	     end
 
+		 READ: begin
+	        if (dc_access_i | cpu_we_i & dc_enable_i) begin
+		       if (!hit & cpu_req_i & !write_pending & refill_allowed) begin
+		          refill_valid <= 0;
+		          refill_valid_r <= 0;
+
+		          // Store the LRU information for correct replacement
+                  // on refill. Always one when only one way.
+                  tag_save_lru <= (OPTION_DCACHE_WAYS==1) | lru;
+
+				  // Save all the ways in order to restore them at the end of the replacement
+		          for (w1 = 0; w1 < OPTION_DCACHE_WAYS; w1 = w1 + 1) begin
+		             tag_way_save[w1] <= tag_way_out[w1];
+		          end
+
+		          state <= DUMP_VICTIM;
+		       end else if (cpu_we_i | write_pending) begin
+		          state <= WRITE;
+		       end else if (invalidate) begin
+		          state <= IDLE;
+		       end
+	        end else if (!dc_enable_i | invalidate) begin
+			   state <= IDLE;
+	        end
+	     end
+		 
+		 DUMP_VICTIM: begin
+		 
+		    if (dump_done)
+			   state <= REFILL;
+		 end
+		 
+		 /*
 	     READ: begin
 	        if (dc_access_i | cpu_we_i & dc_enable_i) begin
 		       if (!hit & cpu_req_i & !write_pending & refill_allowed) begin
@@ -495,6 +562,7 @@ module mor1kx_dcache
 			   state <= IDLE;
 	        end
 	     end
+		 */
 
 	     REFILL: begin
 	        if (we_i) begin
@@ -631,6 +699,10 @@ module mor1kx_dcache
 	        end
 	     end
 
+		 DUMP_VICTIM: begin
+		    
+		 end
+		 
 	     REFILL: begin
 	        if (we_i) begin
 		       // Write the data to the way that is replaced (which is the LRU)
@@ -650,11 +722,11 @@ module mor1kx_dcache
 		             tag_we = 1'b1;
 		          end
 
-		 //
-		 // After refill, update the tag memory entry of the
-		 // filled way with the LRU history, the tag and set
-		 // valid to 1.
-		 //
+		       /*
+		       * After refill, update the tag memory entry of the
+		       * filled way with the LRU history, the tag and set
+		       * valid to 1.
+		       */
 		       if (refill_done) begin
 		          for (w2 = 0; w2 < OPTION_DCACHE_WAYS; w2 = w2 + 1) begin
 		             tag_way_in[w2] = tag_way_save[w2];
