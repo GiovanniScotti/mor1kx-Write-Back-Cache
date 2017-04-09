@@ -65,6 +65,7 @@ module mor1kx_lsu_cappuccino
     // The exception PC as it has went through the store buffer
     output [OPTION_OPERAND_WIDTH-1:0] store_buffer_epcr_o,
 
+	// It contains the data to load into registers
     output [OPTION_OPERAND_WIDTH-1:0] lsu_result_o,
     output 			      lsu_valid_o,
     // exception output
@@ -205,7 +206,8 @@ module mor1kx_lsu_cappuccino
 
    // ---------- STORE BUFFER INTERFACE ----------
    
-   /* Asserted when the lsu wants to perform a store and the buffer is not empty.
+   /* 
+   * Asserted when the lsu wants to perform a store and the buffer is not empty.
    * Moreover, the dc_refill and dc_refill_r must be false (they are true if the
    * dcache is in the refill state)
    */
@@ -454,10 +456,13 @@ module mor1kx_lsu_cappuccino
 	      dbus_bsel_o <= 4'hf;
 	      dbus_atomic <= 0;
 	      last_write <= 0;
-		  // If the store buffer contains data, switch immediately to WRITE state
+		  
+		  // If the store buffer contains data or a store operation should be
+		  // performed, switch immediately to WRITE state
 	      if (store_buffer_write | !store_buffer_empty) begin
 	        state <= WRITE;
 	      end
+		  
           else if (ctrl_op_lsu & dbus_access & !dc_refill & !dbus_ack &
 			           !dbus_err & !except_dbus & !access_done &
 			           !pipeline_flush_i) begin
@@ -486,14 +491,14 @@ module mor1kx_lsu_cappuccino
 	        end
 	      end
 		
-		  /*
+		  // *** ENTER THE DC_DUMP_VICTIM state ***
+		  
 		  else if (dc_dump_req) begin
-		     ...
+		     dbus_req_o <= 0;
 		     state <= DC_DUMP_VICTIM
-		
 		  end
-		  */
 		
+	
           else if (dc_refill_req) begin
 	         dbus_req_o <= 1;
 	         dbus_adr <= dc_adr_match;
@@ -642,7 +647,7 @@ generate
 
 endgenerate
 
-// --------------------------------------------- STORE BUFFER LOGIC ----------------------------------------------------//
+// ---------- STORE BUFFER LOGIC ----------
 
 // Store buffer logic
 always @(posedge clk)
@@ -659,6 +664,8 @@ assign store_buffer_write = (ctrl_op_lsu_store_i & (padv_ctrl_i | tlb_reload_don
 
 generate
 if (FEATURE_STORE_BUFFER!="NONE") begin : store_buffer_gen
+// Attenzione: lo store buffer comunica con il bus solo nello stato WRITE.
+// Voglio che store_buffer_read si attivi solo nello stato WRITE
    assign store_buffer_read = (state == IDLE) & store_buffer_write |
 			      (state == IDLE) & !store_buffer_empty |
 			      (state == WRITE) & (dbus_ack_i | !dbus_req_o) &
@@ -677,6 +684,7 @@ if (FEATURE_STORE_BUFFER!="NONE") begin : store_buffer_gen
       .clk	    (clk),
       .rst	    (rst),
 
+	  
       .pc_i	    (ctrl_epcr_i),
       .adr_i	(store_buffer_wadr),
       .dat_i	(lsu_sdat),
@@ -731,6 +739,8 @@ endgenerate
 
    assign dc_req = ctrl_op_lsu & dc_access & !access_done & !dbus_stall &
 		   !(dbus_atomic & dbus_we & !atomic_reserve);
+
+		   // Refill must be allowed also when the operation is a load
    assign dc_refill_allowed = !(ctrl_op_lsu_store_i | state == WRITE) &
 			      !dc_snoop_hit & !snoop_valid;
 
@@ -778,21 +788,21 @@ if (FEATURE_DATACACHE!="NONE") begin : dcache_gen
 	    .spr_bus_dat_o		(spr_bus_dat_dc_o),	 // Templated
 	    .spr_bus_ack_o		(spr_bus_ack_dc_o),	 // Templated
 	    // Inputs
-	    .clk			(clk),			 // Templated
-	    .rst			(rst),			 // Templated
+	    .clk			    (clk),			 // Templated
+	    .rst			    (rst),			 // Templated
 	    .dc_dbus_err_i		(dbus_err),		 // Templated
 	    .dc_enable_i		(dc_enabled),		 // Templated
 	    .dc_access_i		(dc_access),		 // Templated
 	    .cpu_dat_i			(lsu_sdat),		 // Templated
 	    .cpu_adr_i			(dc_adr),		 // Templated
-	    .cpu_adr_match_i		(dc_adr_match),		 // Templated
+	    .cpu_adr_match_i	(dc_adr_match),		 // Templated
 	    .cpu_req_i			(dc_req),		 // Templated
 	    .cpu_we_i			(dc_we),		 // Templated
 	    .cpu_bsel_i			(dc_bsel),		 // Templated
 	    .refill_allowed		(dc_refill_allowed),	 // Templated
 	    .wradr_i			(dbus_adr),		 // Templated
 	    .wrdat_i			(dbus_dat_i),		 // Templated
-	    .we_i			(dbus_ack_i),		 // Templated
+	    .we_i			    (dbus_ack_i),		 // Templated
 	    .snoop_adr_i		(snoop_adr_i[31:0]),
 	    .snoop_valid_i		(snoop_valid),		 // Templated
 	    .spr_bus_addr_i		(spr_bus_addr_i[15:0]),
@@ -841,30 +851,30 @@ if (FEATURE_DMMU!="NONE") begin : dmmu_gen
    mor1kx_dmmu
      (/*AUTOINST*/
       // Outputs
-      .phys_addr_o			(dmmu_phys_addr),	 // Templated
-      .cache_inhibit_o			(dmmu_cache_inhibit),	 // Templated
-      .tlb_miss_o			(tlb_miss),		 // Templated
-      .pagefault_o			(pagefault),		 // Templated
+      .phys_addr_o			    (dmmu_phys_addr),	 // Templated
+      .cache_inhibit_o		    (dmmu_cache_inhibit),	 // Templated
+      .tlb_miss_o			    (tlb_miss),		 // Templated
+      .pagefault_o			    (pagefault),		 // Templated
       .tlb_reload_req_o			(tlb_reload_req),	 // Templated
       .tlb_reload_busy_o		(tlb_reload_busy),	 // Templated
       .tlb_reload_addr_o		(tlb_reload_addr),	 // Templated
-      .tlb_reload_pagefault_o		(tlb_reload_pagefault),	 // Templated
+      .tlb_reload_pagefault_o	(tlb_reload_pagefault),	 // Templated
       .spr_bus_dat_o			(spr_bus_dat_dmmu_o),	 // Templated
       .spr_bus_ack_o			(spr_bus_ack_dmmu_o),	 // Templated
       // Inputs
-      .clk				(clk),
-      .rst				(rst),
-      .enable_i				(dmmu_enable),		 // Templated
-      .virt_addr_i			(virt_addr),		 // Templated
+      .clk				        (clk),
+      .rst				        (rst),
+      .enable_i				    (dmmu_enable),		 // Templated
+      .virt_addr_i			    (virt_addr),		 // Templated
       .virt_addr_match_i		(ctrl_lsu_adr_i),	 // Templated
-      .op_store_i			(ctrl_op_lsu_store_i),	 // Templated
-      .op_load_i			(ctrl_op_lsu_load_i),	 // Templated
+      .op_store_i			    (ctrl_op_lsu_store_i),	 // Templated
+      .op_load_i			    (ctrl_op_lsu_load_i),	 // Templated
       .supervisor_mode_i		(supervisor_mode_i),
       .tlb_reload_ack_i			(tlb_reload_ack),	 // Templated
       .tlb_reload_data_i		(tlb_reload_data),	 // Templated
       .tlb_reload_pagefault_clear_i	(tlb_reload_pagefault_clear), // Templated
       .spr_bus_addr_i			(spr_bus_addr_i[15:0]),
-      .spr_bus_we_i			(spr_bus_we_i),
+      .spr_bus_we_i			    (spr_bus_we_i),
       .spr_bus_stb_i			(dmmu_spr_bus_stb),	 // Templated
       .spr_bus_dat_i			(spr_bus_dat_i[OPTION_OPERAND_WIDTH-1:0]));
 end else begin
