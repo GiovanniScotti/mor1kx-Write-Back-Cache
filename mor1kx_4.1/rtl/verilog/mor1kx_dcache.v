@@ -44,6 +44,7 @@ module mor1kx_dcache
 	
 	// ---------- DUMP VICTIM SIGNALS ----------
 	
+	// Devo mettere la width degli operandi
 	// Data to be dumped in the LSU store buffer
 	output                dump_dat_o;
 	// Address of the data to be dumped
@@ -55,7 +56,7 @@ module mor1kx_dcache
 	// Asserted when dump is completed
 	output                dump_done_o;
 
-    // CPU Interface
+    // ---------- CPU Interface ----------
     output 			      cpu_err_o,
 	// Asserted when the cache puts data requested by LSU on cpu_dat_o
     output 			      cpu_ack_o,
@@ -173,6 +174,8 @@ module mor1kx_dcache
    wire                   dump_done;
    wire                   dump_clearance;
    reg [WAY_WIDTH-3:0]    dump_adr;
+   reg [WAY_WIDTH-3:0]    dump_adr_r;
+   reg [TAG_WIDTH-1:0]    dump_tag;
    
    /*
    * These are 8 bit variables, one bit per each possible 32-bit block in the cache block.
@@ -182,6 +185,7 @@ module mor1kx_dcache
    reg [(1<<(OPTION_DCACHE_BLOCK_WIDTH-2))-1:0] refill_valid_r;
    
    reg [(1<<(OPTION_DCACHE_BLOCK_WIDTH-2))-1:0] dump_valid;
+   reg [(1<<(OPTION_DCACHE_BLOCK_WIDTH-2))-1:0] dump_valid_r;
    
    wire				      invalidate;
 
@@ -310,7 +314,7 @@ module mor1kx_dcache
 	  
 		 // Address used to access a way. It is taken from the incoming address
 		 // If in the DUMP_VICTIM state, the read address is dump_adr
-	     assign way_raddr[i] = (state = DUMP_VICTIM) ? dump_adr : cpu_adr_i[WAY_WIDTH-1:2];
+	     assign way_raddr[i] = (state == DUMP_VICTIM) ? dump_adr : cpu_adr_i[WAY_WIDTH-1:2];
 		 // We can write into the way memory only in the write state and in the refill state
 	     assign way_waddr[i] = write ? cpu_adr_match_i[WAY_WIDTH-1:2] : wradr_i[WAY_WIDTH-1:2];
 	     // Data to copy into the way memory
@@ -338,7 +342,7 @@ module mor1kx_dcache
          // Multiplex the way entries in the tag memory and concatenate the tags and flags
 		 // of the different ways
          assign tag_din[(i+1)*TAGMEM_WAY_WIDTH-1:i*TAGMEM_WAY_WIDTH] = tag_way_in[i];
-		 // tag_way_out contains the valid bit, the dirty bit and the tag
+		 // tag_way_out contains the dirty bit, the valid bit and the tag
          assign tag_way_out[i] = tag_dout[(i+1)*TAGMEM_WAY_WIDTH-1:i*TAGMEM_WAY_WIDTH];
 
 	     if (OPTION_DCACHE_SNOOP != "NONE") begin
@@ -366,26 +370,28 @@ module mor1kx_dcache
    integer w0;
    always @(*) begin
       cpu_dat_o = {OPTION_OPERAND_WIDTH{1'bx}};
+	  dump_dat_o = {OPTION_OPERAND_WIDTH{1'bx}};
 
       // Put correct way on the data port
       for (w0 = 0; w0 < OPTION_DCACHE_WAYS; w0 = w0 + 1) begin
          if (way_hit[w0] | (refill_hit & tag_save_lru[w0])) begin
 		 
 		 
-		    /*
-			************************
+		    /*************************
 			* This is an OPTIMIZATION:
 			*
 			* The first 32 refilled bits are immediately sent to the LSU
 			* since they are the data required by it. Then, the refill procedure
 			* continues until its termination.
 			*
-			************************
-			*/
+			*************************/
 		
 			// way_dout is the 32 bit data contained in the hit way
             cpu_dat_o = way_dout[w0];
          end
+		 if (lru[w0]) begin
+		    dump_dat_o = way_dout[w0];
+		 end
       end
    end
 
@@ -443,6 +449,9 @@ module mor1kx_dcache
    // If the dump procedure can take place
    assign dump_clearance = |(lru & way_dirty);
    
+   // The two LSB are always 0 because we access 32 bit at a time
+   assign dump_adr_o = {dump_tag,dump_adr_r,2'b00};
+   
    
    /*
     * SPR bus interface
@@ -497,6 +506,9 @@ module mor1kx_dcache
 
 	     refill_valid_r <= refill_valid;
 
+		 dump_adr_r <= dump_adr;
+		 dump_valid_r <= dump_valid;
+
 	     if (snoop_valid_i) begin
 	     //
 	     // If there is a snoop event, we need to store this information.
@@ -545,7 +557,14 @@ module mor1kx_dcache
 				  // Take the address of the set and concatenate it with 0
 				  // This is the address to increment by 4 to carry out the dump.
 				  dump_adr <= {cpu_adr_match_i[WAY_WIDTH-1:OPTION_DCACHE_BLOCK_WIDTH],{(OPTION_DCACHE_BLOCK_WIDTH-2){1'b0}};
-		          state <= DUMP_VICTIM;
+		          // Initialize the tag for the dump process and building the dump address
+				  // check_way_tag[lru] already contains the tag of the way that will be dumped
+				  for (w1 = 0; w1 < OPTION_DCACHE_WAYS; w1 = w1 + 1) begin
+				     if (lru[w1]) begin
+				        dump_tag <= check_way_tag[w1];
+					 end
+				  end
+				  state <= DUMP_VICTIM;
 		       end else if (cpu_we_i | write_pending) begin
 		          state <= WRITE;
 		       end else if (invalidate) begin
@@ -560,9 +579,9 @@ module mor1kx_dcache
 		    // Check if dirty bit == 1 (it remains asserted for all the duration of the dump)
 			// The dirty bit will be reset at the end of the refill state
 			if (dump_clearance) begin
-			   dump_valid[dump_adr[OPTION_DCACHE_BLOCK_WIDTH-1:2]] <= 1;
+			   dump_valid[dump_adr[OPTION_DCACHE_BLOCK_WIDTH-1-2:0]] <= 1;
 			   
-			   //Increment by 4
+			   //Increment by 1
 			
 			   if (dump_done) begin
 			      state <= REFILL;

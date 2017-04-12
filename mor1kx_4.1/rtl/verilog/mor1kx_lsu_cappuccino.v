@@ -491,13 +491,15 @@ module mor1kx_lsu_cappuccino
 	        end
 	      end
 		
-		  // *** ENTER THE DC_DUMP_VICTIM state ***
+		  // *** enter the DC_DUMP_VICTIM state from the IDLE state ***
 		  
 		  else if (dc_dump_req) begin
-		     dbus_req_o <= 0;
+		     dbus_req_o <= 1;
+			 //...
 		     state <= DC_DUMP_VICTIM
 		  end
-		
+		  
+		  // TODO: it should be moved in the DC_DUMP_VICTIM state
 	
           else if (dc_refill_req) begin
 	         dbus_req_o <= 1;
@@ -506,6 +508,14 @@ module mor1kx_lsu_cappuccino
 	      end
 	    end
 
+		DC_DUMP_VICTIM: begin
+		// store_buffer_write <= 1;
+		
+		
+		// TODO: finchè store_buffer_empty & dump_done == 0, devo scrivere in
+		// memoria svuotando il buffer
+		end
+		
 	    DC_REFILL: begin
 	      dbus_req_o <= 1;
 	      if (dbus_ack_i) begin
@@ -532,6 +542,7 @@ module mor1kx_lsu_cappuccino
 	      end
 	    end
 
+		// TODO: will the WRITE state be useless?
 	    WRITE: begin
 	      dbus_req_o <= 1;
 	      dbus_we <= 1;
@@ -665,7 +676,7 @@ assign store_buffer_write = (ctrl_op_lsu_store_i & (padv_ctrl_i | tlb_reload_don
 generate
 if (FEATURE_STORE_BUFFER!="NONE") begin : store_buffer_gen
 // Attenzione: lo store buffer comunica con il bus solo nello stato WRITE.
-// Voglio che store_buffer_read si attivi solo nello stato WRITE
+// Voglio che store_buffer_read si attivi solo nello stato DC_DUMP_VICTIM
 // Lo store buffer deve essere instanziato sempre!!!
    assign store_buffer_read = (state == IDLE) & store_buffer_write |
 			      (state == IDLE) & !store_buffer_empty |
@@ -742,7 +753,10 @@ endgenerate
 		   !(dbus_atomic & dbus_we & !atomic_reserve);
 
 		   // Refill must be allowed also when the operation is a load
-   assign dc_refill_allowed = !(ctrl_op_lsu_store_i | state == WRITE) &
+   //assign dc_refill_allowed = !(ctrl_op_lsu_store_i | state == WRITE) &
+   //		      !dc_snoop_hit & !snoop_valid;
+				  
+   assign dc_refill_allowed = !(state == WRITE) &
 			      !dc_snoop_hit & !snoop_valid;
 
 generate
