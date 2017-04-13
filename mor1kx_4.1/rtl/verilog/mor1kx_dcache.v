@@ -23,7 +23,7 @@ module mor1kx_dcache
     parameter OPTION_OPERAND_WIDTH = 32,          // bit
     parameter OPTION_DCACHE_BLOCK_WIDTH = 5,      // bit
     parameter OPTION_DCACHE_SET_WIDTH = 9,        // bit
-    parameter OPTION_DCACHE_WAYS = 2,             // 2 way set associative cache
+    parameter OPTION_DCACHE_WAYS = 2,             // n-way set associative cache
     parameter OPTION_DCACHE_LIMIT_WIDTH = 32,
     parameter OPTION_DCACHE_SNOOP = "NONE"
     )
@@ -44,11 +44,10 @@ module mor1kx_dcache
 	
 	// ---------- DUMP VICTIM SIGNALS ----------
 	
-	// Devo mettere la width degli operandi
 	// Data to be dumped in the LSU store buffer
-	output                dump_dat_o;
+	output [OPTION_OPERAND_WIDTH-1:0]     dump_dat_o;
 	// Address of the data to be dumped
-	output                dump_adr_o;
+	output [OPTION_OPERAND_WIDTH-1:0]     dump_adr_o;
 	// Control signal that tells the LSU to enter in the dump_victim state
 	output                dump_req_o;
 	// Asserted when in the dump victim state
@@ -57,6 +56,7 @@ module mor1kx_dcache
 	output                dump_done_o;
 
     // ---------- CPU Interface ----------
+	
     output 			      cpu_err_o,
 	// Asserted when the cache puts data requested by LSU on cpu_dat_o
     output 			      cpu_ack_o,
@@ -67,7 +67,7 @@ module mor1kx_dcache
     input [OPTION_OPERAND_WIDTH-1:0]      cpu_adr_i,
 	// In cpu_adr_match_i the 2 LSB are always 0
     input [OPTION_OPERAND_WIDTH-1:0]      cpu_adr_match_i,
-	// Asserted  when the LSU wants to perform a store or load operation and dc_access is true
+	// Asserted when the LSU wants to perform a store or load operation and dc_access is true
     input 			      cpu_req_i,
 	// Asserted when the LSU wants to perform a store
     input 			      cpu_we_i,
@@ -104,7 +104,7 @@ module mor1kx_dcache
    * it is replaces in the REFILL state.
    */
 	
-   // States
+   // States, hot encoded
    localparam IDLE		    = 6'b000001;
    localparam READ	     	= 6'b000010;
    localparam WRITE		    = 6'b000100;
@@ -446,6 +446,10 @@ module mor1kx_dcache
    
    // Tell the lsu whether the dump is done or not
    assign dump_done_o = dump_done;
+   
+   // TODO: Check this
+   assign dump_done = &(dump_valid);
+   
    // If the dump procedure can take place
    assign dump_clearance = |(lru & way_dirty);
    
@@ -555,7 +559,7 @@ module mor1kx_dcache
 		          end
 				  
 				  // Take the address of the set and concatenate it with 0
-				  // This is the address to increment by 4 to carry out the dump.
+				  // This is the address to increment by 1 to carry out the dump.
 				  dump_adr <= {cpu_adr_match_i[WAY_WIDTH-1:OPTION_DCACHE_BLOCK_WIDTH],{(OPTION_DCACHE_BLOCK_WIDTH-2){1'b0}};
 		          // Initialize the tag for the dump process and building the dump address
 				  // check_way_tag[lru] already contains the tag of the way that will be dumped
