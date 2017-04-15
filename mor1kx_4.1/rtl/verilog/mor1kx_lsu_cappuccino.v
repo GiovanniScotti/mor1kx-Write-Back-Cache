@@ -179,6 +179,12 @@ module mor1kx_lsu_cappuccino
    wire 			     dc_refill;
    wire 			     dc_refill_req;
    wire 			     dc_refill_done;
+   
+   // --- dump victim signals ---
+   
+   wire                  dc_dump;
+   wire                  dc_dump_req;
+   wire                  dc_dump_done;
 
    reg 				     dc_enable_r;
    wire 			     dc_enabled;
@@ -491,21 +497,13 @@ module mor1kx_lsu_cappuccino
 	        end
 	      end
 		
-		  // *** enter the DC_DUMP_VICTIM state from the IDLE state ***
+		  // TODO: *** enter the DC_DUMP_VICTIM state from the IDLE state ***
 		  
 		  else if (dc_dump_req) begin
 		     dbus_req_o <= 1;
 			 //...
 		     state <= DC_DUMP_VICTIM
 		  end
-		  
-		  // TODO: it should be moved in the DC_DUMP_VICTIM state
-	
-          else if (dc_refill_req) begin
-	         dbus_req_o <= 1;
-	         dbus_adr <= dc_adr_match;
-	         state <= DC_REFILL;
-	      end
 	    end
 
 		DC_DUMP_VICTIM: begin
@@ -514,6 +512,11 @@ module mor1kx_lsu_cappuccino
 		
 		// TODO: finchè store_buffer_empty & dump_done == 0, devo scrivere in
 		// memoria svuotando il buffer
+		   if (dc_refill_req) begin
+	          dbus_req_o <= 1;
+	          dbus_adr <= dc_adr_match;
+	          state <= DC_REFILL;
+		   end
 		end
 		
 	    DC_REFILL: begin
@@ -796,6 +799,14 @@ if (FEATURE_DATACACHE!="NONE") begin : dcache_gen
 	    .refill_o			(dc_refill),		 // Templated
 	    .refill_req_o		(dc_refill_req),	 // Templated
 	    .refill_done_o		(dc_refill_done),	 // Templated
+		
+		// DUMP_VICTIM signals
+		.dump_dat_o
+		.dump_adr_o
+		.dump_req_o         (dc_dump_req),
+		.dump_victim_o      (dc_dump),
+		.dump_done_o        (dc_dump_done),
+		
 	    .cpu_err_o			(dc_err),		 // Templated
 	    .cpu_ack_o			(dc_ack),		 // Templated
 	    .cpu_dat_o			(dc_ldat),		 // Templated
