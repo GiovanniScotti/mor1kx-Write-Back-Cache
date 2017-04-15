@@ -185,6 +185,7 @@ module mor1kx_dcache
    reg [(1<<(OPTION_DCACHE_BLOCK_WIDTH-2))-1:0] refill_valid_r;
    
    reg [(1<<(OPTION_DCACHE_BLOCK_WIDTH-2))-1:0] dump_valid;
+   // TODO: forse non serve
    reg [(1<<(OPTION_DCACHE_BLOCK_WIDTH-2))-1:0] dump_valid_r;
    
    wire				      invalidate;
@@ -378,7 +379,7 @@ module mor1kx_dcache
 		 
 		 
 		    /*************************
-			* This is an OPTIMIZATION:
+			* There is an OPTIMIZATION:
 			*
 			* The first 32 refilled bits are immediately sent to the LSU
 			* since they are the data required by it. Then, the refill procedure
@@ -427,19 +428,13 @@ module mor1kx_dcache
 
    
    // *************************************************
-   // WB Cache: a refill should be required also in the write state in order to implementation
+   // TODO: WB Cache: a refill should be required also in the write state in order to implement
    // the write allocate feature
    // -------------------------------------------------
    
    
-   
-   // ATTENZIONE QUI: READ DIVENTA DUMP REQUEST
-   
    // Refill is required if in the read state a miss occurs.
-   assign refill_req_o = read & cpu_req_i & !hit & !write_pending & refill_allowed | refill;
-  
-  
-   // TODO: check the condition
+   assign refill_req_o = dump_victim & dump_done | refill;
   
    // dump_req_o signal is in charge of controlling the transition of the LSU to the DC_DUMP_VICTIM state
    assign dump_req_o = read & cpu_req_i & !hit & !write_pending & refill_allowed | dump_victim;
@@ -584,8 +579,10 @@ module mor1kx_dcache
 			// The dirty bit will be reset at the end of the refill state
 			if (dump_clearance) begin
 			   dump_valid[dump_adr[OPTION_DCACHE_BLOCK_WIDTH-1-2:0]] <= 1;
-			   
-			   //Increment by 1
+			   // Increase the address by 1 because the two LSB are cut off
+			   dump_adr <= dump_adr + 1;
+			
+			// TODO: sincronizzare il passaggio allo stato refill tra cache e lsu
 			
 			   if (dump_done) begin
 			      state <= REFILL;
@@ -594,33 +591,6 @@ module mor1kx_dcache
 		       state <= REFILL;
 			end
 		 end
-		 
-		 /*
-	     READ: begin
-	        if (dc_access_i | cpu_we_i & dc_enable_i) begin
-		       if (!hit & cpu_req_i & !write_pending & refill_allowed) begin
-		          refill_valid <= 0;
-		          refill_valid_r <= 0;
-
-		          // Store the LRU information for correct replacement
-                  // on refill. Always one when only one way.
-                  tag_save_lru <= (OPTION_DCACHE_WAYS==1) | lru;
-
-		          for (w1 = 0; w1 < OPTION_DCACHE_WAYS; w1 = w1 + 1) begin
-		             tag_way_save[w1] <= tag_way_out[w1];
-		          end
-
-		          state <= REFILL;
-		       end else if (cpu_we_i | write_pending) begin
-		          state <= WRITE;
-		       end else if (invalidate) begin
-		          state <= IDLE;
-		       end
-	        end else if (!dc_enable_i | invalidate) begin
-			   state <= IDLE;
-	        end
-	     end
-		 */
 
 	     REFILL: begin
 	        if (we_i) begin
