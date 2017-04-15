@@ -500,15 +500,45 @@ module mor1kx_lsu_cappuccino
 		  // TODO: *** enter the DC_DUMP_VICTIM state from the IDLE state ***
 		  
 		  else if (dc_dump_req) begin
-		     dbus_req_o <= 1;
+		     dbus_req_o <= 0;
 			 //...
 		     state <= DC_DUMP_VICTIM
 		  end
 	    end
 
 		DC_DUMP_VICTIM: begin
-		// store_buffer_write <= 1;
-		
+		   store_buffer_write <= 1;
+		   // Abilita il segnale di write
+		   // Indirizzo e dato da salvare nel buffer arrivano dalla cache
+		   // if dc_dump_done then store_buffer_write <= 0;
+		/*
+		   // Request the bus
+		   dbus_req_o <= 1;
+		   // Enable the write request: we want to write in memory
+	       dbus_we <= 1;
+
+		  if (!store_buffer_empty) begin
+	         if (!dbus_req_o | dbus_ack_i & !last_write) begin
+	            dbus_bsel_o <= store_buffer_bsel;
+	            dbus_adr <= store_buffer_radr;
+	            dbus_dat <= store_buffer_dat;
+	            dbus_atomic <= store_buffer_atomic;
+	            last_write <= store_buffer_empty;
+	         end
+		  end
+
+	      if (store_buffer_write)
+	        last_write <= 0;
+
+	      if (last_write & dbus_ack_i | dbus_err_i) begin
+	        dbus_req_o <= 0;
+	        dbus_we <= 0;
+	        if (!store_buffer_write) begin
+		        state <= IDLE;
+		        write_done <= 1;
+	        end
+	      end
+		*/
 		
 		// TODO: finchè store_buffer_empty & dump_done == 0, devo scrivere in
 		// memoria svuotando il buffer
