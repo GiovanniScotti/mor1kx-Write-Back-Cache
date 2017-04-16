@@ -185,8 +185,6 @@ module mor1kx_dcache
    reg [(1<<(OPTION_DCACHE_BLOCK_WIDTH-2))-1:0] refill_valid_r;
    
    reg [(1<<(OPTION_DCACHE_BLOCK_WIDTH-2))-1:0] dump_valid;
-   // TODO: forse non serve
-   reg [(1<<(OPTION_DCACHE_BLOCK_WIDTH-2))-1:0] dump_valid_r;
    
    wire				      invalidate;
 
@@ -437,15 +435,15 @@ module mor1kx_dcache
    assign refill_req_o = dump_victim & dump_done | refill;
   
    // dump_req_o signal is in charge of controlling the transition of the LSU to the DC_DUMP_VICTIM state
-   assign dump_req_o = read & cpu_req_i & !hit & !write_pending & refill_allowed | dump_victim;
+   assign dump_req_o = read & cpu_req_i & !hit & !write_pending | dump_victim;
    
    // Tell the lsu whether the dump is done or not
    assign dump_done_o = dump_done;
    
-   // TODO: Check this
-   assign dump_done = &(dump_valid);
+   // Asserted if dump took place and it's done or if there is no need it happens
+   assign dump_done = &(dump_valid) | !dump_clearance;
    
-   // If the dump procedure can take place
+   // Asserted if the dump procedure can take place
    assign dump_clearance = |(lru & way_dirty);
    
    // The two LSB are always 0 because we access 32 bit at a time
@@ -506,7 +504,6 @@ module mor1kx_dcache
 	     refill_valid_r <= refill_valid;
 
 		 dump_adr_r <= dump_adr;
-		 dump_valid_r <= dump_valid;
 
 	     if (snoop_valid_i) begin
 	     //
@@ -538,7 +535,7 @@ module mor1kx_dcache
 
 		 READ: begin
 	        if (dc_access_i | cpu_we_i & dc_enable_i) begin
-		       if (!hit & cpu_req_i & !write_pending & refill_allowed) begin
+		       if (!hit & cpu_req_i & !write_pending) begin
 			      dump_valid <= 0;
 				  
 		          refill_valid <= 0;
@@ -579,7 +576,7 @@ module mor1kx_dcache
 			// The dirty bit will be reset at the end of the refill state
 			if (dump_clearance) begin
 			   dump_valid[dump_adr[OPTION_DCACHE_BLOCK_WIDTH-1-2:0]] <= 1;
-			   // Increase the address by 1 because the two LSB are cut off
+			   // Increase the address by 1 because the two LSB have been cut off
 			   dump_adr <= dump_adr + 1;
 			
 			// TODO: sincronizzare il passaggio allo stato refill tra cache e lsu
@@ -731,10 +728,6 @@ module mor1kx_dcache
 	        end
 	     end
 
-		 DUMP_VICTIM: begin
-		    
-		 end
-		 
 	     REFILL: begin
 	        if (we_i) begin
 		       // Write the data to the way that is replaced (which is the LRU)

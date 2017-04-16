@@ -32,24 +32,27 @@ module mor1kx_lsu_cappuccino
     parameter OPTION_DMMU_SET_WIDTH = 6,
     parameter OPTION_DMMU_WAYS = 1,
     parameter FEATURE_STORE_BUFFER = "ENABLED",
+	// Store buffer width is 8 since the OPTION_DCACHE_BLOCK_WIDTH is 5
+	// 32 bit * 8 = 32 byte
     parameter OPTION_STORE_BUFFER_DEPTH_WIDTH = 8,
     parameter FEATURE_ATOMIC = "ENABLED"
     )
    (
-    input 			      clk,      // Clock
-    input 			      rst,      // Reset
+    input 			      clk,         // Clock
+    input 			      rst,         // Reset
 
     input 			      padv_execute_i,
     input 			      padv_ctrl_i, // needed for dmmu spr
     input 			      decode_valid_i,
-    // calculated address from ALU
+    // Calculated address from ALU
     input [OPTION_OPERAND_WIDTH-1:0]  exec_lsu_adr_i,
     input [OPTION_OPERAND_WIDTH-1:0]  ctrl_lsu_adr_i,
 
-    // register file B in (store operand)
+    // Register file B in (store operand)
+	// Register file B is commonly used when a store is performed
     input [OPTION_OPERAND_WIDTH-1:0]  ctrl_rfb_i,
 
-    // from decode stage regs, indicate if load or store
+    // From decode stage regs, indicate if load or store
     input 			      exec_op_lsu_load_i,
     input 			      exec_op_lsu_store_i,
     input 			      exec_op_lsu_atomic_i,
@@ -68,7 +71,7 @@ module mor1kx_lsu_cappuccino
 	// It contains the data to load into registers
     output [OPTION_OPERAND_WIDTH-1:0] lsu_result_o,
     output 			      lsu_valid_o,
-    // exception output
+    // Exception output
     output 			      lsu_except_dbus_o,
     output 			      lsu_except_align_o,
     output 			      lsu_except_dtlb_miss_o,
@@ -81,7 +84,7 @@ module mor1kx_lsu_cappuccino
     output 			      atomic_flag_set_o,
     output 			      atomic_flag_clear_o,
 
-    // stall signal for msync logic
+    // Stall signal for msync logic
     output                msync_stall_o,
 
     // SPR interface
@@ -180,9 +183,9 @@ module mor1kx_lsu_cappuccino
    wire 			     dc_refill_req;
    wire 			     dc_refill_done;
    
-   // --- dump victim signals ---
+   // --- dump_victim signals ---
    
-   wire                  dc_dump;
+   wire                  dc_dump_state;
    wire                  dc_dump_req;
    wire                  dc_dump_done;
 
@@ -218,7 +221,7 @@ module mor1kx_lsu_cappuccino
    * dcache is in the refill state)
    */
    // Store buffer write signal. It increments the write pointer of the store buffer
-   wire 			     store_buffer_write;
+   reg  			     store_buffer_write;
    // Store buffer read signal. It increments the read pointer of the store buffer
    wire				     store_buffer_read;
    // The store buffer is full
@@ -263,6 +266,7 @@ module mor1kx_lsu_cappuccino
 
    assign ctrl_op_lsu = ctrl_op_lsu_load_i | ctrl_op_lsu_store_i;
 
+   // It contains the data to be stored
    assign lsu_sdat = (ctrl_lsu_length_i == 2'b00) ? // byte access
 		     {ctrl_rfb_i[7:0],ctrl_rfb_i[7:0],
 		      ctrl_rfb_i[7:0],ctrl_rfb_i[7:0]} :
@@ -301,6 +305,7 @@ module mor1kx_lsu_cappuccino
      else if (padv_execute_i)
        access_done <= 0;
      else if (lsu_ack)
+	   // 1 cycle after lsu_ack
        access_done <= 1;
 
    always @(posedge clk `OR_ASYNC_RST)
@@ -347,18 +352,18 @@ module mor1kx_lsu_cappuccino
       	  2'b10:
       	    dbus_bsel = 4'b0010;
       	  2'b11:
-      	   dbus_bsel = 4'b0001;
+      	    dbus_bsel = 4'b0001;
       	endcase
       2'b01: // halfword access
-    	  case(ctrl_lsu_adr_i[1])
-    	    1'b0:
-    	     dbus_bsel = 4'b1100;
-    	    1'b1:
-    		   dbus_bsel = 4'b0011;
-	      endcase
+    	case(ctrl_lsu_adr_i[1])
+    	  1'b0:
+    	    dbus_bsel = 4'b1100;
+    	  1'b1:
+    		dbus_bsel = 4'b0011;
+	    endcase
       2'b10,
       2'b11:
-	      dbus_bsel = 4'b1111;
+	        dbus_bsel = 4'b1111;
     endcase
 
    // Select part of read word
@@ -375,7 +380,7 @@ module mor1kx_lsu_cappuccino
     endcase // case (ctrl_lsu_adr_i[1:0])
 
    // Do appropriate extension
-  always @(*)
+   always @(*)
     case({ctrl_lsu_zext_i, ctrl_lsu_length_i})
       3'b100: // lbz
 	      dbus_dat_extended = {24'd0,dbus_dat_aligned[31:24]};
@@ -417,6 +422,7 @@ module mor1kx_lsu_cappuccino
 			     store_buffer_write :
 			     write_done;
 
+   // TODO: da rivedere
    assign lsu_ack = (ctrl_op_lsu_store_i | state == WRITE) ?
 		                (store_buffer_ack & !ctrl_op_lsu_atomic_i |write_done & ctrl_op_lsu_atomic_i) :
 		                (dbus_access ? dbus_ack : dc_ack);
@@ -453,12 +459,14 @@ module mor1kx_lsu_cappuccino
     write_done <= 0;
     tlb_reload_ack <= 0;
     tlb_reload_done <= 0;
+	store_buffer_write <= 0;
 
     case (state)
 	    IDLE: begin
 	      dbus_req_o <= 0;
 	      dbus_we <= 0;
 	      dbus_adr <= 0;
+		  // Default b_sel is word access!
 	      dbus_bsel_o <= 4'hf;
 	      dbus_atomic <= 0;
 	      last_write <= 0;
@@ -507,7 +515,12 @@ module mor1kx_lsu_cappuccino
 	    end
 
 		DC_DUMP_VICTIM: begin
-		   store_buffer_write <= 1;
+		   // If dump is not done, then increment the write pointer
+		   // and store evicted data into the buffer
+		   if (!dc_dump_done)
+		      store_buffer_write <= 1;
+			  // store buffer write adr, data and bsel
+			  
 		   // Abilita il segnale di write
 		   // Indirizzo e dato da salvare nel buffer arrivano dalla cache
 		   // if dc_dump_done then store_buffer_write <= 0;
@@ -789,7 +802,7 @@ endgenerate
    //assign dc_refill_allowed = !(ctrl_op_lsu_store_i | state == WRITE) &
    //		      !dc_snoop_hit & !snoop_valid;
 				  
-   assign dc_refill_allowed = !(state == WRITE) &
+   assign dc_refill_allowed = dc_dump_done &
 			      !dc_snoop_hit & !snoop_valid;
 
 generate
@@ -834,7 +847,7 @@ if (FEATURE_DATACACHE!="NONE") begin : dcache_gen
 		.dump_dat_o
 		.dump_adr_o
 		.dump_req_o         (dc_dump_req),
-		.dump_victim_o      (dc_dump),
+		.dump_victim_o      (dc_dump_state),
 		.dump_done_o        (dc_dump_done),
 		
 	    .cpu_err_o			(dc_err),		 // Templated
@@ -875,6 +888,10 @@ end else begin
    assign dc_bsel = 0;
    assign dc_we = 0;
    assign dc_snoop_hit = 0;
+   
+   assign dc_dump_req = 0;
+   assign dc_dump_state = 0;
+   assign dc_dump_done = 0;
 end
 
 endgenerate
