@@ -797,12 +797,8 @@ endgenerate
 
    assign dc_req = ctrl_op_lsu & dc_access & !access_done & !dbus_stall &
 		   !(dbus_atomic & dbus_we & !atomic_reserve);
-
-		   // Refill must be allowed also when the operation is a load
-   //assign dc_refill_allowed = !(ctrl_op_lsu_store_i | state == WRITE) &
-   //		      !dc_snoop_hit & !snoop_valid;
 				  
-   assign dc_refill_allowed = dc_dump_done &
+   assign dc_refill_allowed = ctrl_op_lsu & dc_dump_done &
 			      !dc_snoop_hit & !snoop_valid;
 
 generate
