@@ -185,6 +185,8 @@ module mor1kx_lsu_cappuccino
    
    // --- dump_victim signals ---
    
+   wire [OPTION_OPERAND_WIDTH-1:0]   dc_dump_dat;
+   wire [OPTION_OPERAND_WIDTH-1:0]   dc_dump_adr;
    wire                  dc_dump_state;
    wire                  dc_dump_req;
    wire                  dc_dump_done;
@@ -519,11 +521,12 @@ module mor1kx_lsu_cappuccino
 		   // and store evicted data into the buffer
 		   if (!dc_dump_done)
 		      store_buffer_write <= 1;
-			  // store buffer write adr, data and bsel
 			  
-		   // Abilita il segnale di write
-		   // Indirizzo e dato da salvare nel buffer arrivano dalla cache
-		   // if dc_dump_done then store_buffer_write <= 0;
+			  // TODO: salvare nello store buffer l'indirizzo e il dato che arrivano
+			  // dalla cache. Il tutto dura 2^(OPTION_DCACHE_BLOCK_WIDTH - 2) cicli
+              // di clock. Durante questi cicli store_buffer_write rimane alto.
+			  
+			  
 		/*
 		   // Request the bus
 		   dbus_req_o <= 1;
@@ -719,6 +722,7 @@ always @(posedge clk)
 assign store_buffer_write = (ctrl_op_lsu_store_i & (padv_ctrl_i | tlb_reload_done) | store_buffer_write_pending) &
 			                         !store_buffer_full & !dc_refill & !dc_refill_r & !dbus_stall & !dc_snoop_hit;
 
+									 
 generate
 if (FEATURE_STORE_BUFFER!="NONE") begin : store_buffer_gen
 // Attenzione: lo store buffer comunica con il bus solo nello stato WRITE.
@@ -739,17 +743,19 @@ if (FEATURE_STORE_BUFFER!="NONE") begin : store_buffer_gen
        )
    mor1kx_store_buffer
      (
+	  // Inputs
       .clk	    (clk),
       .rst	    (rst),
 
-	  
+	  // TODO: change source signals
       .pc_i	    (ctrl_epcr_i),
-      .adr_i	(store_buffer_wadr),
-      .dat_i	(lsu_sdat),
+      .adr_i	(dc_dump_adr),
+      .dat_i	(dc_dump_dat),
       .bsel_i	(dbus_bsel),
       .atomic_i	(ctrl_op_lsu_atomic_i),
       .write_i	(store_buffer_write),
 
+	  // Outputs
       .pc_o	    (store_buffer_epcr_o),
       .adr_o	(store_buffer_radr),
       .dat_o	(store_buffer_dat),
@@ -798,7 +804,11 @@ endgenerate
    assign dc_req = ctrl_op_lsu & dc_access & !access_done & !dbus_stall &
 		   !(dbus_atomic & dbus_we & !atomic_reserve);
 				  
-   assign dc_refill_allowed = ctrl_op_lsu & dc_dump_done &
+   // Refill must be allowed when the operation is either a load or a store
+   // and the dump in the data cache has already been completed. Moreover, the store
+   // buffer must be empty.
+   // TODO: check if this is enough to guarantee that the refill can take place
+   assign dc_refill_allowed = ctrl_op_lsu & dc_dump_done & store_buffer_empty &
 			      !dc_snoop_hit & !snoop_valid;
 
 generate
@@ -840,8 +850,8 @@ if (FEATURE_DATACACHE!="NONE") begin : dcache_gen
 	    .refill_done_o		(dc_refill_done),	 // Templated
 		
 		// DUMP_VICTIM signals
-		.dump_dat_o
-		.dump_adr_o
+		.dump_dat_o         (dc_dump_dat),
+		.dump_adr_o         (dc_dump_adr),
 		.dump_req_o         (dc_dump_req),
 		.dump_victim_o      (dc_dump_state),
 		.dump_done_o        (dc_dump_done),
