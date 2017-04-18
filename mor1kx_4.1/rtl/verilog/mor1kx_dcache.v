@@ -424,19 +424,13 @@ module mor1kx_dcache
 
    assign refill_o = refill;
    assign dump_victim_o = dump_victim;
-
-   
-   // *************************************************
-   // TODO: WB Cache: a refill should be required also in the write state in order to implement
-   // the write allocate feature
-   // -------------------------------------------------
    
    
    // Refill is required if in the read state a miss occurs.
-   assign refill_req_o = dump_victim & dump_done | refill;
+   assign refill_req_o = dump_victim & dump_done & refill_allowed | refill;
   
    // dump_req_o signal is in charge of controlling the transition of the LSU to the DC_DUMP_VICTIM state
-   assign dump_req_o = read & cpu_req_i & !hit & !write_pending | dump_victim;
+   assign dump_req_o = (read | write) & cpu_req_i & !hit | dump_victim;
    
    // Tell the lsu whether the dump is done or not
    assign dump_done_o = dump_done;
@@ -575,7 +569,7 @@ module mor1kx_dcache
 		 DUMP_VICTIM: begin
 		    // Check if dirty bit == 1 (it remains asserted for all the duration of the dump)
 			// The dirty bit will be reset at the end of the refill state
-			if (dump_done) begin
+			if (dump_done & refill_allowed) begin
 			   state <= REFILL;
 			end else if (dump_clearance) begin
 			   dump_valid[dump_adr[OPTION_DCACHE_BLOCK_WIDTH-1-2:0]] <= 1;
@@ -655,9 +649,7 @@ module mor1kx_dcache
       end
    end
 
-   //
-   // This is the combinational part of the state machine that interfaces the tag and way memories.
-   //
+   // This is the combinational part of the state machine that interfaces the tag and way memories
    integer w2;
    always @(*) begin
       // Default is to keep data, don't write and don't access
