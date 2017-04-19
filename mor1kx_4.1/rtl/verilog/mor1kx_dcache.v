@@ -171,6 +171,7 @@ module mor1kx_dcache
    wire 			      refill_done;
    wire 			      refill_hit;
    
+   // Dump signals
    wire                   dump_done;
    wire                   dump_clearance;
    reg [WAY_WIDTH-3:0]    dump_adr;
