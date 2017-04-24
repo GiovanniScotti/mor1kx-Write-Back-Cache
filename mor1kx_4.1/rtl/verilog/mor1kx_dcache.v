@@ -11,8 +11,8 @@
     Stefan Kristiansson <stefan.kristiansson@saunalahti.fi>
     Stefan Wallentowitz <stefan.wallentowitz@tum.de>
  Modified by:
-    Francesco Maio
-	Giovanni Scotti
+    Francesco Maio  <francima93@gmail.com>
+	Giovanni Scotti <gio.scotti.94@gmail.com>
 
  ******************************************************************************/
 
@@ -45,21 +45,24 @@ module mor1kx_dcache
 	// ---------- DUMP VICTIM SIGNALS ----------
 	
 	// Data to be dumped in the LSU store buffer
-	output [OPTION_OPERAND_WIDTH-1:0]     dump_dat_o;
+	output reg [OPTION_OPERAND_WIDTH-1:0]     dump_dat_o,
 	// Address of the data to be dumped
-	output [OPTION_OPERAND_WIDTH-1:0]     dump_adr_o;
+	output [OPTION_OPERAND_WIDTH-1:0]         dump_adr_o,
 	// Control signal that tells the LSU to enter in the dump_victim state
-	output                dump_req_o;
-	// Asserted when in the dump victim state
-	output                dump_victim_o;
+	output                dump_req_o,
 	// Asserted when dump is completed
-	output                dump_done_o;
+	output                dump_done_o,
+    // Indicate to the lsu that the data has been written 
+    output reg            write_done_o,
 
     // ---------- CPU Interface ----------
 	
     output 			      cpu_err_o,
 	// Asserted when the cache puts data requested by LSU on cpu_dat_o
     output 			      cpu_ack_o,
+    
+    output                cache_hit_o,
+    
 	// The data that exits the cache
     output reg [OPTION_OPERAND_WIDTH-1:0] cpu_dat_o,
 	// The data that enters the cache
@@ -73,10 +76,13 @@ module mor1kx_dcache
     input 			      cpu_we_i,
 	// This is the byte selection
     input [3:0] 		  cpu_bsel_i,
-    // Asserted when the LSU does not perform a store and it's not in the write state
+    // Asserted when the LSU is ready to switch to the DC_REFILL state.
+    // It is used to syncronize the transition of both the cache and the LSU to the REFILL state
     input 			      refill_allowed,
 
+    // Address used in the REFILL state
     input [OPTION_OPERAND_WIDTH-1:0]  wradr_i,
+    // Data used in the REFILL state
     input [OPTION_OPERAND_WIDTH-1:0]  wrdat_i,
     input 			      we_i,
 
@@ -211,7 +217,7 @@ module mor1kx_dcache
    reg [TAGMEM_WAY_WIDTH-1:0] 	      tag_way_save[OPTION_DCACHE_WAYS-1:0];
 
    // Whether to write to the tag memory in this cycle
-   reg 				      tag_we;
+   reg 				              tag_we;
 
    // This is the tag we need to write to the tag memory during refill
    wire [TAG_WIDTH-1:0] 	      tag_wtag;
@@ -231,6 +237,8 @@ module mor1kx_dcache
    wire 			      hit;
    // OPTION_DCACHE_WAYS number of bits. 1 if the way hits, 0 otherwise
    wire [OPTION_DCACHE_WAYS-1:0]      way_hit;
+   // Asserted whenever a way is valid, but also dirty
+   wire [OPTION_DCACHE_WAYS-1:0]      way_dirty;
 
    // This is the least recently used value before access the memory.
    // Those are one hot encoded.
@@ -254,17 +262,24 @@ module mor1kx_dcache
    wire                               check_way_valid [OPTION_DCACHE_WAYS-1:0];
    wire                               check_way_dirty [OPTION_DCACHE_WAYS-1:0];
 
-   reg 				      write_pending;
+   reg 				                  write_pending;
+   
+   // The following signals are used in order to understand if the refill state
+   // is accessed from the read state or the write state.
+   reg                                from_read;
+   reg                                from_write;
+   reg                                from_refill;
 
    // Extract index to read from snooped address
    wire [OPTION_DCACHE_SET_WIDTH-1:0] snoop_index;
+   
    assign snoop_index = snoop_adr_i[WAY_WIDTH-1:OPTION_DCACHE_BLOCK_WIDTH];
 
    // Register that is high one cycle after the actual snoop event to
    // drive the comparison
-   reg 				      snoop_check;
+   reg 				                  snoop_check;
    // Register that stores the tag for one cycle
-   reg [TAG_WIDTH-1:0] 		      snoop_tag;
+   reg [TAG_WIDTH-1:0] 		          snoop_tag;
    // Also store the index for one cycle, for the succeeding write access
    reg [OPTION_DCACHE_SET_WIDTH-1:0]  snoop_windex;
 
@@ -282,7 +297,7 @@ module mor1kx_dcache
    // Whether the way hits
    wire [OPTION_DCACHE_WAYS-1:0]      snoop_way_hit;
    // Whether any way hits
-   wire 			      snoop_hit;
+   wire 			                  snoop_hit;
 
    assign snoop_hit_o = (OPTION_DCACHE_SNOOP != "NONE") ? snoop_hit : 0;
 
@@ -314,8 +329,9 @@ module mor1kx_dcache
 	  for (i = 0; i < OPTION_DCACHE_WAYS; i=i+1) begin : ways
 	  
 		 // Address used to access a way. It is taken from the incoming address
-		 // If in the DUMP_VICTIM state, the read address is dump_adr
-	     assign way_raddr[i] = (state == DUMP_VICTIM) ? dump_adr : cpu_adr_i[WAY_WIDTH-1:2];
+		 // If in the DUMP_VICTIM state, the read address is dump_adr.
+		 // This is why we need to increment the address in each clock cycle
+	     assign way_raddr[i] = (dump_victim) ? dump_adr : cpu_adr_i[WAY_WIDTH-1:2];
 		 // We can write into the way memory only in the write state and in the refill state
 	     assign way_waddr[i] = write ? cpu_adr_match_i[WAY_WIDTH-1:2] : wradr_i[WAY_WIDTH-1:2];
 	     // Data to copy into the way memory
@@ -335,7 +351,7 @@ module mor1kx_dcache
          assign way_hit[i] = check_way_valid[i] & check_way_match[i];	 
 		 
 		 // Asserted whenever a way is valid, but also dirty
-		 // This is used in the dump_victim state in order to understand if the way must be flushed.
+		 // This is used in the read/write states in order to understand if the way must be flushed.
 		 // If the way is dirty, but it is not valid, it must not be dumped.
 		 // The way to be dumped is given by lru
 		 assign way_dirty[i] = check_way_valid[i] & check_way_dirty[i];
@@ -361,13 +377,12 @@ module mor1kx_dcache
 
    // hit is true if there is at least one hit in one way
    assign hit = |way_hit;
+   assign cache_hit_o = hit;
 
    assign snoop_hit = (OPTION_DCACHE_SNOOP != "NONE") &
 		      |snoop_way_hit & snoop_check;
 
-	
-	
-   // This code block is in charge of returning the data
+   // This code block is in charge of returning the data to the LSU
    integer w0;
    always @(*) begin
       cpu_dat_o = {OPTION_OPERAND_WIDTH{1'bx}};
@@ -397,7 +412,6 @@ module mor1kx_dcache
    end
 
    
-   
    // Compute the next address to get the following 32 bit of data.
    // It is used when refilling
    assign next_refill_adr = (OPTION_DCACHE_BLOCK_WIDTH == 5) ?
@@ -412,11 +426,13 @@ module mor1kx_dcache
    assign refill_done = refill_valid[next_refill_adr[OPTION_DCACHE_BLOCK_WIDTH-1:2]];
    
    // True when the missing 32 bit group (the one that caused the cache miss) of the cache block has been replaced.
-   // The address must be incremented by 4 in order to load another 32 bit group in the block
-   assign refill_hit = refill_valid_r[cpu_adr_match_i[OPTION_DCACHE_BLOCK_WIDTH-1:2]] &
+   // The address must be incremented by 4 in order to load another 32 bit group in the block.
+   // Pay attention that the "& from_read" condition has been added in order to prevent the refill_hit
+   // signal from going high when the refill is caused by a write
+   assign refill_hit = (refill_valid_r[cpu_adr_match_i[OPTION_DCACHE_BLOCK_WIDTH-1:2]] &
 		       cpu_adr_match_i[OPTION_DCACHE_LIMIT_WIDTH-1:OPTION_DCACHE_BLOCK_WIDTH] ==
 		       wradr_i[OPTION_DCACHE_LIMIT_WIDTH-1:OPTION_DCACHE_BLOCK_WIDTH] &
-		       refill & !write_pending;
+		       refill & !write_pending) & from_read;
 
    assign refill = (state == REFILL);
    assign read = (state == READ);
@@ -424,14 +440,13 @@ module mor1kx_dcache
    assign dump_victim = (state == DUMP_VICTIM);
 
    assign refill_o = refill;
-   assign dump_victim_o = dump_victim;
    
-   
-   // Refill is required if in the read state a miss occurs.
-   assign refill_req_o = dump_victim & dump_done & refill_allowed | refill;
+   // Refill is required if in the read/write state a miss occurs and the cache line is not dirty.
+   // Otherwise it is required after the dump of the line
+   assign refill_req_o = (dump_victim | write | read) & cpu_req_i & !hit & dump_done & refill_allowed & !from_refill | refill;
   
    // dump_req_o signal is in charge of controlling the transition of the LSU to the DC_DUMP_VICTIM state
-   assign dump_req_o = (read | write) & cpu_req_i & !hit | dump_victim;
+   assign dump_req_o = (read | write) & cpu_req_i & !hit & dump_clearance | dump_victim;
    
    // Tell the lsu whether the dump is done or not
    assign dump_done_o = dump_done;
@@ -444,7 +459,6 @@ module mor1kx_dcache
    
    // The two LSB are always 0 because we access 32 bit at a time
    assign dump_adr_o = {dump_tag,dump_adr_r,2'b00};
-   
    
    /*
     * SPR bus interface
@@ -488,6 +502,7 @@ module mor1kx_dcache
       if (rst) begin
 	     state <= IDLE;
 	     write_pending <= 0;
+	     from_refill <= 0;
       end else if(dc_dbus_err_i) begin
 	     state <= IDLE;
 	     write_pending <= 0;
@@ -532,31 +547,42 @@ module mor1kx_dcache
 		 READ: begin
 	        if (dc_access_i | cpu_we_i & dc_enable_i) begin
 		       if (!hit & cpu_req_i & !write_pending) begin
-			      dump_valid <= 0;
-				  
+		          // Initialization of the refill state
 		          refill_valid <= 0;
 		          refill_valid_r <= 0;
 
-		          // Store the LRU information for correct replacement
-                  // on refill. Always one when only one way in the cache.
+		          // Store the LRU information for correct replacement on refill.
+		          // Always one when only one way in the cache
                   tag_save_lru <= (OPTION_DCACHE_WAYS==1) | lru;
 
-				  // Save all the ways in order to restore them at the end of the replacement
+				  // Save all the ways in order to restore them at the end
+				  // of the replacement of the target cache line
 		          for (w1 = 0; w1 < OPTION_DCACHE_WAYS; w1 = w1 + 1) begin
 		             tag_way_save[w1] <= tag_way_out[w1];
 		          end
 				  
-				  // Take the address of the set and concatenate it with 0
-				  // This is the address to increment by 1 to carry out the dump.
-				  dump_adr <= {cpu_adr_match_i[WAY_WIDTH-1:OPTION_DCACHE_BLOCK_WIDTH],{(OPTION_DCACHE_BLOCK_WIDTH-2){1'b0}};
-		          // Initialize the tag for the dump process and building the dump address
-				  // check_way_tag[lru] already contains the tag of the way that will be dumped
-				  for (w1 = 0; w1 < OPTION_DCACHE_WAYS; w1 = w1 + 1) begin
-				     if (lru[w1]) begin
-				        dump_tag <= check_way_tag[w1];
-					 end
-				  end
-				  state <= DUMP_VICTIM;
+				  // Highlight the fact that we come from the READ state
+				  from_read <= 1;
+				  from_write <= 0;
+				  
+				  if (dump_clearance) begin
+				     // Initialization of the dump state
+				     dump_valid <= 0;
+				     // Take the address of the set and concatenate it with 0
+                     // This is the address to increment by 1 to carry out the dump.
+                     dump_adr <= {cpu_adr_match_i[WAY_WIDTH-1:OPTION_DCACHE_BLOCK_WIDTH], {{OPTION_DCACHE_BLOCK_WIDTH-2}{1'b0}}};
+                     // Initialize the tag for the dump process and building the dump address
+                     // check_way_tag[lru] already contains the tag of the way that will be dumped
+                     for (w1 = 0; w1 < OPTION_DCACHE_WAYS; w1 = w1 + 1) begin
+                        if (lru[w1]) begin
+                           dump_tag <= check_way_tag[w1];
+                        end
+                     end
+                     
+				     state <= DUMP_VICTIM;
+				  end else if (refill_allowed) begin
+				     state <= REFILL;
+				  end   
 		       end else if (cpu_we_i | write_pending) begin
 		          state <= WRITE;
 		       end else if (invalidate) begin
@@ -571,8 +597,9 @@ module mor1kx_dcache
 		    // Check if dirty bit == 1 (it remains asserted for all the duration of the dump)
 			// The dirty bit will be reset at the end of the refill state
 			if (dump_done & refill_allowed) begin
+			   from_refill <= 0;
 			   state <= REFILL;
-			end else if (dump_clearance) begin
+			end else if (dump_clearance & !dump_done) begin
 			   dump_valid[dump_adr[OPTION_DCACHE_BLOCK_WIDTH-1-2:0]] <= 1;
 			   // Increase the address by 1 because the two LSB have been cut off
 			   dump_adr <= dump_adr + 1;   
@@ -583,9 +610,12 @@ module mor1kx_dcache
 	        if (we_i) begin
 		       refill_valid[wradr_i[OPTION_DCACHE_BLOCK_WIDTH-1:2]] <= 1;
 
-		       if (refill_done) begin
+		       if (refill_done & from_read) begin
 		          state <= IDLE;
-			   end else if (refill_done & write_pending) begin
+		       // If refill is done and we came from write, then return to write state
+		       // in order to carry out the writing of the target cache line
+			   end else if (refill_done & from_write) begin
+			      from_refill <= 1;
 			      state <= WRITE;
 			   end
 	        end
@@ -600,9 +630,8 @@ module mor1kx_dcache
 	     end
 
 	     WRITE: begin
-		    if (!hit & cpu_req_i) begin
-			   dump_valid <= 0;
-				  
+		    if (!hit & cpu_req_i & !from_refill) begin
+			   // Initialization of the refill state
 		       refill_valid <= 0;
 		       refill_valid_r <= 0;
 
@@ -614,19 +643,34 @@ module mor1kx_dcache
 		       for (w1 = 0; w1 < OPTION_DCACHE_WAYS; w1 = w1 + 1) begin
 		          tag_way_save[w1] <= tag_way_out[w1];
 	           end
-				  
-			   // Take the address of the set and concatenate it with 0
-			   // This is the address to increment by 1 to carry out the dump.
-			   dump_adr <= {cpu_adr_match_i[WAY_WIDTH-1:OPTION_DCACHE_BLOCK_WIDTH],{(OPTION_DCACHE_BLOCK_WIDTH-2){1'b0}};
-		       // Initialize the tag for the dump process and building the dump address
-			   // check_way_tag[lru] already contains the tag of the way that will be dumped
-			   for (w1 = 0; w1 < OPTION_DCACHE_WAYS; w1 = w1 + 1) begin
-			      if (lru[w1]) begin
-				     dump_tag <= check_way_tag[w1];
-			      end
-			   end
-			   state <= DUMP_VICTIM;
-	        else if ((!dc_access_i | !cpu_req_i | !cpu_we_i) & !snoop_hit) begin
+			   
+			   // Highlight the fact that we come from the WRITE state
+               from_read <= 0;
+               from_write <= 1;
+			   
+			   if (dump_clearance) begin
+			      // Initialization of the dump state
+                  dump_valid <= 0;
+                  // Take the address of the set and concatenate it with 0
+                  // This is the address to increment by 1 to carry out the dump.
+                  dump_adr <= {cpu_adr_match_i[WAY_WIDTH-1:OPTION_DCACHE_BLOCK_WIDTH], {{OPTION_DCACHE_BLOCK_WIDTH-2}{1'b0}}};
+                  // Initialize the tag for the dump process and building the dump address
+                  // check_way_tag[lru] already contains the tag of the way that will be dumped
+                  for (w1 = 0; w1 < OPTION_DCACHE_WAYS; w1 = w1 + 1) begin
+                     if (lru[w1]) begin
+                        dump_tag <= check_way_tag[w1];
+                     end
+                  end
+			   
+                  state <= DUMP_VICTIM;
+               end else if (refill_allowed) begin
+                  from_refill <= 0;
+                  state <= REFILL;
+            end
+            
+            //TODO: controllare condizione per passaggio a READ
+	        end else if ((!dc_access_i | !cpu_req_i | !cpu_we_i) & !snoop_hit & hit) begin
+	           from_refill <= 0;
 		       write_pending <= 0;
 		       state <= READ;
 	        end
@@ -670,6 +714,9 @@ module mor1kx_dcache
 
       // The default is (of course) not to acknowledge the invalidate
       invalidate_ack = 1'b0;
+      
+      // Default is write_done_o = 0
+      write_done_o = 1'b0;
 
       if (snoop_hit) begin
 	     // This is the write access
@@ -741,11 +788,22 @@ module mor1kx_dcache
                // Update the LRU history
 	           tag_lru_in = next_lru_history;
                // Enable tag memory write to update the LRU information
-		       tag_we = 1'b1;	   
+		       tag_we = 1'b1;
+		       
+               // Inform the LSU that the data will be in cache in the next clock cycle
+               write_done_o = 1'b1;
+		       
+		       // Set the dirty bit to 1 after writing
+		       for (w2 = 0; w2 < OPTION_DCACHE_WAYS; w2 = w2 + 1) begin
+		          if (tag_save_lru[w2]) begin
+		             tag_way_in[w2][TAGMEM_WAY_DIRTY] = 1'b1;
+		          end
+		       end   
 	        end
 	     end
 
 	     REFILL: begin
+	        // we_i is the ack coming from the bus
 	        if (we_i) begin
 		       // Write the data to the way that is replaced (which is the LRU)
 		       way_we = tag_save_lru;
@@ -754,7 +812,6 @@ module mor1kx_dcache
 		       access = tag_save_lru;
 
 		       // Invalidate the way on the first write
-			   // and clear the dirty bit
 		       if (refill_valid == 0) begin
 		          for (w2 = 0; w2 < OPTION_DCACHE_WAYS; w2 = w2 + 1) begin
                      if (tag_save_lru[w2]) begin
