@@ -47,10 +47,12 @@ module mor1kx_store_buffer
    wire [FIFO_DATA_WIDTH-1:0] 		fifo_dout;
    wire [FIFO_DATA_WIDTH-1:0] 		fifo_din;
 
-   reg [DEPTH_WIDTH:0]                  write_pointer;
-   reg [DEPTH_WIDTH:0]                  read_pointer;
+   reg [DEPTH_WIDTH:0]              write_pointer;
+   reg [DEPTH_WIDTH:0]              read_pointer;
 
+   // Concatenation of incoming information
    assign fifo_din = {adr_i, dat_i, bsel_i, pc_i, atomic_i};
+   // Splitting of outgoing information
    assign {adr_o, dat_o, bsel_o, pc_o, atomic_o} = fifo_dout;
 
    assign full_o = (write_pointer[DEPTH_WIDTH] != read_pointer[DEPTH_WIDTH]) &&
@@ -79,9 +81,9 @@ module mor1kx_store_buffer
      (
       .clk			(clk),
       .dout			(fifo_dout),
-      .raddr			(read_pointer[DEPTH_WIDTH-1:0]),
+      .raddr	    (read_pointer[DEPTH_WIDTH-1:0]),
       .re			(read_i),
-      .waddr			(write_pointer[DEPTH_WIDTH-1:0]),
+      .waddr		(write_pointer[DEPTH_WIDTH-1:0]),
       .we			(write_i),
       .din			(fifo_din)
       );
