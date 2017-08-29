@@ -177,7 +177,8 @@ module mor1kx_lsu_cappuccino
    wire[OPTION_OPERAND_WIDTH-1:0] dc_dump_adr;
    wire                  dc_dump_req;
    wire                  dc_dump_done;
-   wire                  dc_write_done;
+   wire                  dc_dump_line_clean;
+   wire                  dc_write_valid;
    wire                  dump_last_ack;
    reg                   dump_last_ack_r;
 
@@ -211,7 +212,6 @@ module mor1kx_lsu_cappuccino
    wire [OPTION_OPERAND_WIDTH/8-1:0] store_buffer_bsel;
    wire 			     store_buffer_atomic;
    reg 				     store_buffer_write_pending;
-   reg                   wait_store_buffer_write;
    reg 				     dbus_atomic;
 
    reg 				     last_write;
@@ -389,7 +389,6 @@ module mor1kx_lsu_cappuccino
 
    assign dbus_dat_o = (state == DC_DUMP_VICTIM) ? store_buffer_dat : dbus_dat;
 
-   // TODO: Che sia da richiedere un burst anche nel dump?
    assign dbus_burst_o = (state == DC_REFILL) & !dc_refill_done;
 
    //
@@ -422,7 +421,6 @@ module mor1kx_lsu_cappuccino
       write_done <= 0;
       tlb_reload_ack <= 0;
       tlb_reload_done <= 0;
-      wait_store_buffer_write <= 0;
       
       if (rst)
         state <= IDLE;
@@ -477,21 +475,20 @@ module mor1kx_lsu_cappuccino
 	    end
 
         DC_DUMP_VICTIM: begin
+          if (dump_last_ack) begin
+            dbus_req_o <= 0;
+            dbus_we <= 0;
+          end
+          
           if (dc_refill_req) begin
             dbus_req_o <= 1;
             dbus_adr <= dc_adr_match;
             state <= DC_REFILL;
           end else begin
             // Read data coming from the cache and store them into the store buffer
-            if (!dc_dump_done)
-              wait_store_buffer_write <= 1;
- 
-            if (store_buffer_write & !dc_dump_done) begin
+            if (store_buffer_read) begin
               dbus_req_o <= 1;
               dbus_we <= 1;
-            end else if (dump_last_ack) begin
-              dbus_req_o <= 0;
-              dbus_we <= 0;
             end
           end
         end
@@ -627,19 +624,24 @@ end else begin
 end
 endgenerate
 
+// --- 3 possible configurations: ---
+// 1. Data cache + dump store buffer enabled with write back policy
+// 2. Data cache disabled and store buffer enabled
+// 3. Both data cache and store buffer disabled
 generate
 if (FEATURE_DATACACHE != "NONE") begin : data_cache_and_store_buffer
 
    assign store_buffer_read = (state == DC_DUMP_VICTIM) & ((store_buffer_write & !dbus_req_o) | 
                                 (dbus_ack_i & !store_buffer_empty));
-                                
-   assign store_buffer_write = wait_store_buffer_write;
-                                
+
+   assign store_buffer_write = dc_write_valid;
+
    // The store buffer is created if and only if the data cache is enabled
    mor1kx_store_buffer
      #(
-       // TODO: check if it is reasonable that it is hard coded
-       .DEPTH_WIDTH(8),
+       // Always create a store buffer that contains the cache line
+       // "+1" is required because of the internal structure of the store buffer itself
+       .DEPTH_WIDTH(OPTION_DCACHE_BLOCK_WIDTH-2+1),
        .OPTION_OPERAND_WIDTH(OPTION_OPERAND_WIDTH)
        )
    mor1kx_store_buffer
@@ -651,8 +653,7 @@ if (FEATURE_DATACACHE != "NONE") begin : data_cache_and_store_buffer
       .adr_i     (dc_dump_adr),
       .dat_i     (dc_dump_dat),
       .bsel_i    (4'b1111),
-      // Atomic is 0 since "assign dbus_we_o = dbus_we & (!dbus_atomic | atomic_reserve);"
-      .atomic_i	 (1'b0),
+      .atomic_i  (ctrl_op_lsu_atomic_i),
       .write_i	 (store_buffer_write),
 
       .pc_o	     (store_buffer_epcr_o),
@@ -686,11 +687,11 @@ if (FEATURE_DATACACHE != "NONE") begin : data_cache_and_store_buffer
                     ctrl_op_lsu_store_i & tlb_reload_busy & !tlb_reload_req;
                     
    /* 
-   * The ack is asserted when: 
-   *  - when a store takes place, after dc_write_done is asserted
-   *  - when a load takes place, as soon as the data is passed by the cache
+   * The ack is asserted when:
+   *  - when a store takes place and data is written into the data cache
+   *  - when a load takes place, as soon as the data is received from the cache
    */
-   assign lsu_ack = ctrl_op_lsu_store_i ? dc_write_done : dc_ack;
+   assign lsu_ack = dc_ack;
       
    mor1kx_dcache
      #(
@@ -716,11 +717,12 @@ if (FEATURE_DATACACHE != "NONE") begin : data_cache_and_store_buffer
        .spr_bus_ack_o       (spr_bus_ack_dc_o),     // Templated
       
        // DUMP_VICTIM signals
-       .dump_dat_o          (dc_dump_dat),
-       .dump_adr_o          (dc_dump_adr),
-       .dump_req_o          (dc_dump_req),
-       .dump_done_o         (dc_dump_done),
-       .write_done_o        (dc_write_done),
+       .dump_dat_o            (dc_dump_dat),
+       .dump_adr_o            (dc_dump_adr),
+       .dump_req_o            (dc_dump_req),
+       .dump_done_o           (dc_dump_done),
+       .dump_mem_line_clean_o (dc_mem_line_clean),
+       .dump_write_valid_o    (dc_write_valid),
       
        // Inputs
        .clk                 (clk),             // Templated
@@ -746,21 +748,86 @@ if (FEATURE_DATACACHE != "NONE") begin : data_cache_and_store_buffer
        .spr_bus_dat_i       (spr_bus_dat_i[OPTION_OPERAND_WIDTH-1:0]));
       
 end else begin
-   // No store buffer 
-   assign store_buffer_epcr_o = ctrl_epcr_i;
-   assign store_buffer_radr = store_buffer_wadr;
-   assign store_buffer_dat = lsu_sdat;
-   assign store_buffer_bsel = dbus_bsel;
-   assign store_buffer_empty = 1'b1;
+
+   // If the cache is disabled, but the store buffer is enabled:
+   // the store buffer acts as a buffer between data to be stored in memory
+   // and memory itself
+   if (FEATURE_STORE_BUFFER != "NONE") begin : store_buffer_gen
+   
+     assign store_buffer_read = (state == IDLE) & store_buffer_write |
+                                (state == IDLE) & !store_buffer_empty |
+                                (state == WRITE) & (dbus_ack_i | !dbus_req_o) &
+                                (!store_buffer_empty | store_buffer_write) & !last_write |
+                                (state == WRITE) & last_write & store_buffer_write;
+   
+     mor1kx_store_buffer
+      #(
+        // TODO: check if it is reasonable that it is hard coded
+        .DEPTH_WIDTH(OPTION_STORE_BUFFER_DEPTH_WIDTH),
+        .OPTION_OPERAND_WIDTH(OPTION_OPERAND_WIDTH)
+        )
+     mor1kx_store_buffer
+       (
+        .clk         (clk),
+        .rst         (rst),
+                    
+        .pc_i        (ctrl_epcr_i),
+        .adr_i       (store_buffer_wadr),
+        .dat_i       (lsu_sdat),
+        .bsel_i      (dbus_bsel),
+        .atomic_i    (ctrl_op_lsu_atomic_i),
+        .write_i     (store_buffer_write),
+                                
+        .pc_o        (store_buffer_epcr_o),
+        .adr_o       (store_buffer_radr),
+        .dat_o       (store_buffer_dat),
+        .bsel_o      (store_buffer_bsel),
+        .atomic_o    (store_buffer_atomic),
+        .read_i      (store_buffer_read),
+                               
+        .full_o      (store_buffer_full),
+        .empty_o     (store_buffer_empty)
+       );
+
+   end else begin
+   
+     // No store buffer 
+     assign store_buffer_epcr_o = ctrl_epcr_i;
+     assign store_buffer_radr = store_buffer_wadr;
+     assign store_buffer_dat = lsu_sdat;
+     assign store_buffer_bsel = dbus_bsel;
+     assign store_buffer_empty = 1'b1;
+     assign store_buffer_atomic = ctrl_op_lsu_atomic_i;
+     
+     reg store_buffer_full_r;
+     
+     always @(posedge clk) begin
+       // Initialize the store_buffer_full_r signal
+       if (rst)
+         store_buffer_full_r <= 0;
+       else begin
+         if (store_buffer_write)
+           store_buffer_full_r <= 1;
+         else if (write_done)
+           store_buffer_full_r <= 0;
+       end
+     end
+  
+     assign store_buffer_full = store_buffer_full_r & !write_done;
+          
+   end
+   
    
    wire     store_buffer_ack;
-   assign store_buffer_ack = write_done;
-      
+   assign   store_buffer_ack = (FEATURE_STORE_BUFFER != "NONE") ? store_buffer_write : write_done;
+   
+   // lsu_ack without the data cache   
    assign lsu_ack = (ctrl_op_lsu_store_i | state == WRITE) ?
-                      (write_done & !ctrl_op_lsu_atomic_i |
+                      (store_buffer_ack & !ctrl_op_lsu_atomic_i |
                         write_done & ctrl_op_lsu_atomic_i) :
                       (dbus_access ? dbus_ack : dc_ack);
 
+   // Store buffer logic (also valid without the store buffer)
    always @(posedge clk) begin
      if (rst)
        store_buffer_write_pending <= 0;
@@ -771,21 +838,11 @@ end else begin
        store_buffer_write_pending <= 1;
    end
    
-   assign store_buffer_write = (ctrl_op_lsu_store_i &
-                  (padv_ctrl_i | tlb_reload_done) |
-                   store_buffer_write_pending) &
-                   !store_buffer_full & !dc_refill & !dc_refill_r &
-                   !dbus_stall & !dc_snoop_hit;
-
-   reg store_buffer_full_r;
-   always @(posedge clk)
-     if (store_buffer_write)
-       store_buffer_full_r <= 1;
-     else if (write_done)
-       store_buffer_full_r <= 0;
-
-   assign store_buffer_full = store_buffer_full_r & !write_done;
-   
+   assign store_buffer_write = (ctrl_op_lsu_store_i & (padv_ctrl_i | tlb_reload_done) |
+                                  store_buffer_write_pending) &
+                                !store_buffer_full & !dc_refill & !dc_refill_r &
+                                !dbus_stall & !dc_snoop_hit;
+ 
    // No cache
    assign dc_access = 0;
    assign dc_refill = 0;
@@ -801,7 +858,8 @@ end else begin
    assign dc_dump_adr = 0;
    assign dc_dump_req = 0;
    assign dc_dump_done = 0;
-   assign dc_write_done = 0;
+   assign dc_dump_line_clean = 0;
+   assign dc_write_valid = 0;
 end
 endgenerate
 
@@ -840,7 +898,7 @@ endgenerate
                                  !dc_snoop_hit & !snoop_valid); 
 
   // The last ack for the dump occurs
-  assign dump_last_ack = dbus_ack_i & store_buffer_empty;
+  assign dump_last_ack = dbus_ack_i & store_buffer_empty & !store_buffer_write;
 
 generate
 if (FEATURE_DMMU!="NONE") begin : dmmu_gen

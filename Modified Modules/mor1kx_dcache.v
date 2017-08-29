@@ -47,13 +47,15 @@ module mor1kx_dcache
 	// Data to be dumped in the LSU store buffer
 	output reg [OPTION_OPERAND_WIDTH-1:0]     dump_dat_o,
 	// Address of the data to be dumped
-	output [OPTION_OPERAND_WIDTH-1:0]         dump_adr_o,
+	output reg [OPTION_OPERAND_WIDTH-1:0]     dump_adr_o,
 	// Control signal that tells the LSU to enter in the dump_victim state
 	output                dump_req_o,
 	// Asserted when dump is completed
 	output                dump_done_o,
-    // Indicate to the lsu that the data has been written 
-    output reg            write_done_o,
+	// Asserted when an ack dump ("short" dump) takes place
+	output                dump_mem_line_clean_o,
+	// Drive store_buffer_write signal
+	output reg            dump_write_valid_o,
 
     // ---------- CPU Interface ----------
 	
@@ -106,8 +108,8 @@ module mor1kx_dcache
     );
 
    /*
-   * A new state called "DUMP_VICTIM" is in charge of flushing a dirty block before
-   * it is replaces in the REFILL state.
+   * A new state called "DUMP_VICTIM" is in charge of flushing a dirty cache line before
+   * it is replaced in the REFILL state.
    */
 	
    // States, hot encoded
@@ -118,32 +120,37 @@ module mor1kx_dcache
    localparam INVALIDATE	= 6'b010000;
    localparam DUMP_VICTIM   = 6'b100000;
 
-   /* 
-   * Address space in bytes for a way.
-   * By using the default parameters, it's equal to 32 Byte blocks * 512 sets = 16 KByte.
-   */
+   // Address space in bytes for a way.
    localparam WAY_WIDTH = OPTION_DCACHE_BLOCK_WIDTH + OPTION_DCACHE_SET_WIDTH;
    /*
     * TAG MEMORY layout with the dirty bit implementation.
 	* The index allows to identify a memory structure like the one provided below.
+	* There is one dirty bit per each 32 bit block in the cache line.
 	*
-    * +-----------------------------------------------------------------------------------+
-    * | LRU | wayN dirty | wayN valid | wayN tag |...| way0 dirty | way0 valid | way0 tag |
-    * +-----------------------------------------------------------------------------------+
+    * +--------------------------------------------------------------------------...
+    * | LRU | wayN last dirty | ... | wayN first dirty | wayN valid | wayN tag | ...
+    * +--------------------------------------------------------------------------...
+    * ...--------------------------------------------------------------------+
+    * ... | way0 last dirty | ... | way0 first dirty | way0 valid | way0 tag |
+    * ...--------------------------------------------------------------------+
     */
 
    // Tag width in bits
    localparam TAG_WIDTH = (OPTION_DCACHE_LIMIT_WIDTH - WAY_WIDTH);
-
+   // The number of dirty bits required. One per each 32 bit block in the cache line
+   localparam QTY_DIRTY_BITS = (1 << OPTION_DCACHE_BLOCK_WIDTH - 2);
    // The tag memory contains entries with OPTION_DCACHE_WAYS parts of
    // TAGMEM_WAY_WIDTH bits each. They are composed (from right to left)
-   // by the tag, the valid bit and the dirty bit.
-   // "+2" is for the valid and the dirty bits.
-   localparam TAGMEM_WAY_WIDTH = TAG_WIDTH + 2;
-   // Position of the dirty bit
-   localparam TAGMEM_WAY_DIRTY = TAGMEM_WAY_WIDTH - 1;
+   // by the tag, the valid bit and the dirty bits.
+   localparam TAGMEM_WAY_WIDTH = TAG_WIDTH + 1 + QTY_DIRTY_BITS;
+   // Define the position of the MSB of the series of dirty bits contained in each entry
+   // of the tag memory.
+   localparam TAGMEM_WAY_DIRTY_MSB = TAGMEM_WAY_WIDTH - 1;
+   // Define the position of the LSB of the series of dirty bits contained in each entry
+   // of the tag memory.
+   localparam TAGMEM_WAY_DIRTY_LSB = TAGMEM_WAY_WIDTH - QTY_DIRTY_BITS;
    // Position of the valid bit
-   localparam TAGMEM_WAY_VALID = TAGMEM_WAY_WIDTH - 2;
+   localparam TAGMEM_WAY_VALID = TAGMEM_WAY_WIDTH - QTY_DIRTY_BITS - 1;
 
    // Additionally, the tag memory entry contains an LRU value. The
    // width of this is 0 for OPTION_DCACHE_LIMIT_WIDTH==1
@@ -179,10 +186,12 @@ module mor1kx_dcache
    
    // Dump signals
    wire                   dump_done;
+   reg                    dump_done_r;
    wire                   dump_clearance;
    reg [WAY_WIDTH-3:0]    dump_adr;
    reg [WAY_WIDTH-3:0]    dump_adr_r;
    reg [TAG_WIDTH-1:0]    dump_tag;
+   wire                   dump_mem_line_clean;
    
    /*
    * These are 8 bit variables, one bit per each possible 32-bit block in the cache block.
@@ -239,6 +248,8 @@ module mor1kx_dcache
    wire [OPTION_DCACHE_WAYS-1:0]      way_hit;
    // Asserted whenever a way is valid, but also dirty
    wire [OPTION_DCACHE_WAYS-1:0]      way_dirty;
+   // Asserted whenever a way is valid, but also clean
+   wire [OPTION_DCACHE_WAYS-1:0]      way_clean;
 
    // This is the least recently used value before access the memory.
    // Those are one hot encoded.
@@ -260,7 +271,10 @@ module mor1kx_dcache
    wire [TAG_WIDTH-1:0]               check_way_tag [OPTION_DCACHE_WAYS-1:0];
    wire                               check_way_match [OPTION_DCACHE_WAYS-1:0];
    wire                               check_way_valid [OPTION_DCACHE_WAYS-1:0];
-   wire                               check_way_dirty [OPTION_DCACHE_WAYS-1:0];
+   wire [QTY_DIRTY_BITS-1:0]          check_way_dirty [OPTION_DCACHE_WAYS-1:0];
+   
+   // This is the offset of the currently dumped 32-bit block in the cache line
+   wire [OPTION_DCACHE_BLOCK_WIDTH-2-1:0] dump_offset;
 
    reg 				                  write_pending;
    
@@ -304,9 +318,10 @@ module mor1kx_dcache
    // Variable used in the for cycles to identify a way
    genvar 			      i;
 
-   // Tells the LSU that the required data have just been sent to it
-   assign cpu_ack_o = ((read | refill) & hit & !write_pending |
-		       refill_hit) & cpu_req_i & !snoop_hit;
+   // Tells the LSU that the required data have just been sent to it or
+   // that data have been written into the cache and the store operation is completed
+   assign cpu_ack_o = (((read | refill) & hit & !write_pending | refill_hit) |
+                        write & hit) & cpu_req_i & !snoop_hit;
 
    // Index to read a specific set
    assign tag_rindex = cpu_adr_i[WAY_WIDTH-1:OPTION_DCACHE_BLOCK_WIDTH];
@@ -344,17 +359,24 @@ module mor1kx_dcache
          assign check_way_match[i] = (check_way_tag[i] == tag_tag);
 		 // It stores the value of the valid bit of each way
          assign check_way_valid[i] = tag_way_out[i][TAGMEM_WAY_VALID];
-		 // It stores the value of the dirty bit in each way
-		 assign check_way_dirty[i] = tag_way_out[i][TAGMEM_WAY_DIRTY];
+		 // It stores the value of the dirty bits of each way
+		 assign check_way_dirty[i] = tag_way_out[i][TAGMEM_WAY_DIRTY_MSB:TAGMEM_WAY_DIRTY_LSB];
 		 
 		 // Did a hit occur?
          assign way_hit[i] = check_way_valid[i] & check_way_match[i];	 
 		 
-		 // Asserted whenever a way is valid, but also dirty
-		 // This is used in the read/write states in order to understand if the way must be flushed.
-		 // If the way is dirty, but it is not valid, it must not be dumped.
-		 // The way to be dumped is given by lru
-		 assign way_dirty[i] = check_way_valid[i] & check_way_dirty[i];
+		 /*
+		 * Asserted whenever a way is valid, but also dirty
+		 * This is used in the read/write states in order to understand if the way must be evicted.
+		 * If the way is dirty, but it is not valid, it must not be dumped.
+		 * The way to be dumped is given by lru.
+		 * Please notice that a way is flushed if at least one 32 bit block is dirty.
+		 */
+		 assign way_dirty[i] = check_way_valid[i] & |(check_way_dirty[i]);
+
+         // Asserted when a way is valid, but not dirty. This is done in order to figure out
+         // when the dump_mem_line_clean (memory acknowledgement) signal is required
+         assign way_clean[i] = check_way_valid[i] & !(|(check_way_dirty[i]));
 		 
          // Multiplex the way entries in the tag memory and concatenate the tags and flags
 		 // of the different ways
@@ -375,7 +397,7 @@ module mor1kx_dcache
       end
    endgenerate
 
-   // hit is true if there is at least one hit in one way
+   // hit is true if there is at least a hit in one way
    assign hit = |way_hit;
    assign cache_hit_o = hit;
 
@@ -446,19 +468,30 @@ module mor1kx_dcache
    assign refill_req_o = (dump_victim | write | read) & cpu_req_i & !hit & dump_done & refill_allowed & !from_refill | refill;
   
    // dump_req_o signal is in charge of controlling the transition of the LSU to the DC_DUMP_VICTIM state
-   assign dump_req_o = (read | write) & cpu_req_i & !hit & dump_clearance | dump_victim;
+   assign dump_req_o = (read | write) & cpu_req_i & !hit & (dump_clearance | dump_mem_line_clean) | dump_victim;
    
    // Tell the lsu whether the dump is done or not
    assign dump_done_o = dump_done;
    
    // Asserted if dump took place and it's done or if there is no need it happens
-   assign dump_done = &(dump_valid) | !dump_clearance;
+   // It also takes into account the case of "short" dump to send an ack to memory
+   assign dump_done = (dump_mem_line_clean) ? |(dump_valid) :
+                                       &(dump_valid) | !dump_clearance;
    
    // Asserted if the dump procedure can take place
    assign dump_clearance = |(lru & way_dirty);
+
+   // When there is a miss, but none of the bits of the line is dirty,
+   // the whole architecture (in particular the memory) must be informed that
+   // the data cache is not anymore the owner of that line, since it is going to be replaced.
+   // All this happens with a "short" dump in which only the first 32 bits of the cache line
+   // are sent to the store buffer in the LSU.
+   assign dump_mem_line_clean = |(lru & way_clean);
    
-   // The two LSB are always 0 because we access 32 bit at a time
-   assign dump_adr_o = {dump_tag,dump_adr_r,2'b00};
+   // Acknowledgement that is sent to the memory when the cache line is clean, but needs to be evicted
+   assign dump_mem_line_clean_o = dump_victim & dump_mem_line_clean;
+   
+   assign dump_offset = dump_adr_r[OPTION_DCACHE_BLOCK_WIDTH-2-1:0];
    
    /*
     * SPR bus interface
@@ -503,6 +536,9 @@ module mor1kx_dcache
 	     state <= IDLE;
 	     write_pending <= 0;
 	     from_refill <= 0;
+	     dump_valid <= 0;
+	     dump_adr <= 0;
+	     dump_adr_r <= 0;
       end else if(dc_dbus_err_i) begin
 	     state <= IDLE;
 	     write_pending <= 0;
@@ -515,6 +551,7 @@ module mor1kx_dcache
 	     refill_valid_r <= refill_valid;
 
 		 dump_adr_r <= dump_adr;
+		 dump_done_r <= dump_done;
 
 	     if (snoop_valid_i) begin
 	     //
@@ -565,7 +602,9 @@ module mor1kx_dcache
 				  from_read <= 1;
 				  from_write <= 0;
 				  
-				  if (dump_clearance) begin
+				  // Dump must happen when the cache line is valid and dirty or
+				  // valid and clean. In the latter case, an acknowledgement to the memory is sent
+				  if (dump_clearance | dump_mem_line_clean) begin
 				     // Initialization of the dump state
 				     dump_valid <= 0;
 				     // Take the address of the set and concatenate it with 0
@@ -599,7 +638,7 @@ module mor1kx_dcache
 			if (dump_done & refill_allowed) begin
 			   from_refill <= 0;
 			   state <= REFILL;
-			end else if (dump_clearance & !dump_done) begin
+			end else if ((dump_clearance | dump_mem_line_clean) & !dump_done) begin
 			   dump_valid[dump_adr[OPTION_DCACHE_BLOCK_WIDTH-1-2:0]] <= 1;
 			   // Increase the address by 1 because the two LSB have been cut off
 			   dump_adr <= dump_adr + 1;   
@@ -648,7 +687,9 @@ module mor1kx_dcache
                from_read <= 0;
                from_write <= 1;
 			   
-			   if (dump_clearance) begin
+			   // Dump must happen when the cache line is valid and dirty or
+               // valid and clean. In the latter case, an acknowledgement to the memory is sent
+			   if (dump_clearance | dump_mem_line_clean) begin
 			      // Initialization of the dump state
                   dump_valid <= 0;
                   // Take the address of the set and concatenate it with 0
@@ -666,9 +707,9 @@ module mor1kx_dcache
                end else if (refill_allowed) begin
                   from_refill <= 0;
                   state <= REFILL;
-            end
+               end
             
-            //TODO: controllare condizione per passaggio a READ
+            // It is useful to return to the READ state because a subsequent load operation can happen
 	        end else if ((!dc_access_i | !cpu_req_i | !cpu_we_i) & !snoop_hit & hit) begin
 	           from_refill <= 0;
 		       write_pending <= 0;
@@ -715,8 +756,8 @@ module mor1kx_dcache
       // The default is (of course) not to acknowledge the invalidate
       invalidate_ack = 1'b0;
       
-      // Default is write_done_o = 0
-      write_done_o = 1'b0;
+      // By default, do not write anything into the store buffer
+      dump_write_valid_o = 0;
 
       if (snoop_hit) begin
 	     // This is the write access
@@ -788,19 +829,34 @@ module mor1kx_dcache
                // Update the LRU history
 	           tag_lru_in = next_lru_history;
                // Enable tag memory write to update the LRU information
-		       tag_we = 1'b1;
-		       
-               // Inform the LSU that the data will be in cache in the next clock cycle
-               write_done_o = 1'b1;
+		       tag_we = 1'b1;	 
 		       
 		       // Set the dirty bit to 1 after writing
 		       for (w2 = 0; w2 < OPTION_DCACHE_WAYS; w2 = w2 + 1) begin
 		          if (tag_save_lru[w2]) begin
-		             tag_way_in[w2][TAGMEM_WAY_DIRTY] = 1'b1;
+		             tag_way_in[w2][TAGMEM_WAY_DIRTY_LSB + cpu_adr_match_i[OPTION_DCACHE_BLOCK_WIDTH-1:2]] = 1'b1;
 		          end
 		       end   
 	        end
 	     end
+
+         DUMP_VICTIM: begin
+            // The two LSB are always 0 because we access 32 bit at a time
+            dump_adr_o = {dump_tag,dump_adr_r,2'b00};
+            
+            // Drive store_buffer_write signal in order to save only dirty 32-bit blocks
+            for (w2 = 0; w2 < OPTION_DCACHE_WAYS; w2 = w2 + 1) begin
+               if (lru[w2]) begin
+                  if(!dump_mem_line_clean) begin
+                     // Dirty bit & dump_valid with respect to a 32-bit block must be asserted
+                     dump_write_valid_o = check_way_dirty[w2][dump_offset] & dump_valid[dump_offset] & !dump_done_r;
+                  end else begin
+                     // If we are sending an acknowledgment to memory
+                     dump_write_valid_o = |(dump_valid) & !dump_done_r;
+                  end
+               end
+            end
+         end
 
 	     REFILL: begin
 	        // we_i is the ack coming from the bus
@@ -831,13 +887,8 @@ module mor1kx_dcache
 		          for (w2 = 0; w2 < OPTION_DCACHE_WAYS; w2 = w2 + 1) begin
 		             tag_way_in[w2] = tag_way_save[w2];
                         if (tag_save_lru[w2]) begin
-					       // Set the dirty bit to 0, the valid bit to one and insert the new tag
-						   tag_way_in[w2] = {1'b0, 1'b1, tag_wtag };
-						   // If write_pending is asserted, it means that the next
-						   // state will be WRITE and new data will be written into
-						   // the cache. This is why the dirty bit must be set to 1
-						   if (write_pending)
-				              tag_way_in[w2][TAGMEM_WAY_DIRTY] = 1'b1;
+					       // Set the dirty bits to 0, the valid bit to one and insert the new tag
+						   tag_way_in[w2] = {{{QTY_DIRTY_BITS}{1'b0}}, 1'b1, tag_wtag};
                         end
                   end
                   tag_lru_in = next_lru_history;
